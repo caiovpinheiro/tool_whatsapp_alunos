@@ -230,6 +230,7 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
       night_cron: getNovoCrmNightCronStatus(),
       last_sync: stats.last_sync,
       last_flags_sync: stats.last_flags_sync || null,
+      last_fields_sync: stats.last_fields_sync || null,
       last_orphan_dedupe: stats.last_orphan_dedupe || null,
       running_flags: flagsJob
         ? {
@@ -242,6 +243,7 @@ router.get('/novo-crm-cache-status', requireApiKey, async (_req, res) => {
             sent: flagsJob.sent,
             matched: flagsJob.matched ?? 0,
             flags_updated: flagsJob.flags_updated ?? 0,
+            fields_updated: flagsJob.fields_updated ?? 0,
             stages_moved: flagsJob.stages_moved ?? 0,
             eta_ms: flagsJob.eta_ms ?? null,
             phase: flagsJob.phase,

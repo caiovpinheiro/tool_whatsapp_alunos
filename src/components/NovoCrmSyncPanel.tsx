@@ -95,6 +95,10 @@ function downloadProvisionCsv(
   URL.revokeObjectURL(url);
 }
 
+function isFieldsJobMode(mode: string | null | undefined) {
+  return String(mode || '').trim() === 'fields';
+}
+
 function phaseLabel(phase: string | null | undefined) {
   switch (phase) {
     case 'starting':
@@ -225,6 +229,7 @@ export function NovoCrmSyncPanel() {
           sent: r.sent ?? 0,
           matched: r.matched ?? 0,
           flags_updated: r.flags_updated ?? 0,
+          fields_updated: r.fields_updated ?? 0,
           stages_moved: r.stages_moved ?? 0,
           eta_ms: r.eta_ms ?? null,
           phase: r.phase,
@@ -354,10 +359,13 @@ export function NovoCrmSyncPanel() {
                 setFlagsStopping(false);
                 const res = r.job.result;
                 if (r.job.status === 'completed') {
+                  const fieldsJob = isFieldsJobMode(r.job.mode || res?.mode);
                   setFlagsMsg(
-                    `Att concluída: ${res?.flags_updated ?? r.job.flags_updated ?? 0} flags · ${
-                      res?.stages_moved ?? r.job.stages_moved ?? 0
-                    } etapas` +
+                    (fieldsJob ? 'Att campos concluída: ' : 'Att concluída: ') +
+                      (fieldsJob
+                        ? `${res?.fields_updated ?? r.job.fields_updated ?? 0} campos · `
+                        : `${res?.flags_updated ?? r.job.flags_updated ?? 0} flags · `) +
+                      `${res?.stages_moved ?? r.job.stages_moved ?? 0} etapas` +
                       (res?.stages_skipped_untouchable
                         ? ` · ${res.stages_skipped_untouchable} intocáveis`
                         : '') +
@@ -371,8 +379,9 @@ export function NovoCrmSyncPanel() {
                   const flags = res?.flags_updated ?? r.job.flags_updated ?? 0;
                   const stages = res?.stages_moved ?? r.job.stages_moved ?? 0;
                   const queue = res?.write_queue ?? 0;
+                  const fieldsJob = isFieldsJobMode(r.job.mode || res?.mode);
                   setFlagsMsg(
-                    `Att cancelada` +
+                    (fieldsJob ? 'Att campos cancelada' : 'Att cancelada') +
                       (scanned || flags || stages || queue
                         ? ` (até então: ${Number(flags).toLocaleString('pt-BR')} flags · ${Number(stages).toLocaleString('pt-BR')} etapas · ${Number(scanned).toLocaleString('pt-BR')} deals` +
                           (queue ? ` · fila ${Number(queue).toLocaleString('pt-BR')}` : '') +
@@ -382,7 +391,10 @@ export function NovoCrmSyncPanel() {
                           : ' · sem progresso parcial')
                   );
                 } else if (r.job.status === 'failed') {
-                  setFlagsMsg(r.job.error || 'Att de etapas falhou');
+                  setFlagsMsg(
+                    r.job.error ||
+                      (isFieldsJobMode(r.job.mode) ? 'Att campos falhou' : 'Att de etapas falhou')
+                  );
                 }
                 void loadStatus();
               }
@@ -465,6 +477,7 @@ export function NovoCrmSyncPanel() {
 
   const last = status?.last_sync || null;
   const lastFlags = status?.last_flags_sync || null;
+  const lastFields = status?.last_fields_sync || null;
   const lastDedupe = status?.last_orphan_dedupe || null;
   const lastDurationMs =
     last?.finished_at && last?.started_at
@@ -925,6 +938,7 @@ export function NovoCrmSyncPanel() {
 
   const flagsRunning = Boolean(flagsJobId) || Boolean(status?.running_flags);
   const fj = flagsJob;
+  const fieldsJobRunning = flagsRunning && isFieldsJobMode(fj?.mode || status?.running_flags?.mode);
   const flagsPct =
     fj && fj.total > 0
       ? Math.min(100, Math.round((fj.processed / fj.total) * 100))
@@ -1054,6 +1068,9 @@ export function NovoCrmSyncPanel() {
                       ? status.night_cron.fields_enabled
                         ? ` · ${String(status.night_cron.fields_hour_utc).padStart(2, '0')}:00 UTC`
                         : ' · OFF (NOVO_CRM_FIELDS_SYNC_ENABLED≠1)'
+                      : ''}
+                    {lastFields?.finished_at
+                      ? ` · última ${fmtDt(lastFields.finished_at)} · ${Number(lastFields.fields_updated || 0).toLocaleString('pt-BR')} campos · ${Number(lastFields.stages_moved || 0).toLocaleString('pt-BR')} etapas${lastFields.cancelled ? ' · cancelada' : ''}`
                       : ''}
                   </li>
                   {status?.night_cron?.fetch_deal_fields ? (
@@ -1240,7 +1257,7 @@ export function NovoCrmSyncPanel() {
                 ) : (
                   <CheckCircle2 className="w-3.5 h-3.5" />
                 )}
-                {flagsRunning ? 'Att rodando…' : 'Att de etapas'}
+                {fieldsJobRunning ? 'Fields rodando…' : flagsRunning ? 'Att rodando…' : 'Att de etapas'}
               </button>
               {flagsRunning && (
                 <button
@@ -1618,7 +1635,7 @@ export function NovoCrmSyncPanel() {
           <div className="mt-4 max-w-xl rounded-xl border border-emerald-300/70 dark:border-emerald-400/50 bg-emerald-50/80 dark:bg-emerald-900/45 p-3.5">
             <div className="flex items-center justify-between gap-2 mb-2">
               <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-300">
-                Att de etapas · {phaseLabel(fj?.phase)}
+                {fieldsJobRunning ? 'Att campos (madrugada)' : 'Att de etapas'} · {phaseLabel(fj?.phase)}
                 {fj?.cancel_requested ? ' · cancelando…' : ''}
               </p>
               <button
@@ -1649,8 +1666,11 @@ export function NovoCrmSyncPanel() {
                   : ''}
               </p>
               <p className="text-[13px] font-medium text-emerald-950 dark:text-[#e6edf6]">
-                Flags gravadas: {Number(fj?.flags_updated || 0).toLocaleString('pt-BR')} · Etapas:{' '}
-                {Number(fj?.stages_moved || 0).toLocaleString('pt-BR')}
+                {fieldsJobRunning
+                  ? `Campos gravados: ${Number(fj?.fields_updated || 0).toLocaleString('pt-BR')}`
+                  : `Flags gravadas: ${Number(fj?.flags_updated || 0).toLocaleString('pt-BR')}`}
+                {' · '}
+                Etapas: {Number(fj?.stages_moved || 0).toLocaleString('pt-BR')}
                 {flagsElapsed ? ` · decorrido ${flagsElapsed}` : ''}
                 {flagsEta ? ` · ETA ~${flagsEta}` : ''}
               </p>

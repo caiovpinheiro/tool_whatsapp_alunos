@@ -165,6 +165,7 @@ export interface NovoCrmFlagsRunningJob {
   sent: number;
   matched?: number;
   flags_updated?: number;
+  fields_updated?: number;
   stages_moved?: number;
   eta_ms?: number | null;
   phase: string | null;
@@ -239,6 +240,7 @@ export interface NovoCrmCacheStatusResponse {
   night_cron?: NovoCrmNightCronStatus | null;
   last_sync: NovoCrmCacheLastSync | null;
   last_flags_sync?: NovoCrmFlagsLastSync | null;
+  last_fields_sync?: NovoCrmFlagsLastSync | null;
   last_orphan_dedupe?: NovoCrmOrphanDedupeLastRun | null;
   running_flags?: NovoCrmFlagsRunningJob | null;
   running_orphan_dedupe?: NovoCrmOrphanDedupeRunningJob | null;
@@ -381,6 +383,7 @@ export interface NovoCrmFlagsStageJobStatusResponse {
     sent: number;
     matched?: number;
     flags_updated?: number;
+    fields_updated?: number;
     stages_moved?: number;
     eta_ms?: number | null;
     phase: string | null;

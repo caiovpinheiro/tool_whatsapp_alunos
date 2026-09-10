@@ -154,8 +154,13 @@ export async function updateSyncState({ cursorUpdatedAt, cursorId = null }) {
 }
 
 const FLAGS_STAGE_LAST_KEY = 'flags_stage_last';
+const FIELDS_LAST_KEY = 'fields_last';
 const ORPHAN_DEDUPE_LAST_KEY = 'orphan_dedupe_last';
 const ORPHAN_DEDUPE_PLAN_KEY = 'orphan_dedupe_plan';
+
+function isFieldsSyncMode(summary) {
+  return String(summary?.mode || '').trim() === 'fields';
+}
 
 /**
  * Persistência genérica de resumo em `novo_crm_cache_sync_state.cursor_id` (JSON).
@@ -200,15 +205,22 @@ async function getJsonSyncState(key) {
 /**
  * Persiste resumo da última Att de etapas (sobrevive a restart; jobs em memória não).
  * Inclui cancel parcial (scanned/flags/etapas até o stop).
+ * mode=fields (cron da madrugada) vai para `fields_last` — não pisa o card Att.
  * @param {object} summary
  */
 export async function saveFlagsStageLastRun(summary) {
-  await saveJsonSyncState(FLAGS_STAGE_LAST_KEY, summary);
+  const key = isFieldsSyncMode(summary) ? FIELDS_LAST_KEY : FLAGS_STAGE_LAST_KEY;
+  await saveJsonSyncState(key, summary);
 }
 
 /** @returns {Promise<object|null>} */
 export async function getFlagsStageLastRun() {
   return getJsonSyncState(FLAGS_STAGE_LAST_KEY);
+}
+
+/** @returns {Promise<object|null>} */
+export async function getFieldsLastRun() {
+  return getJsonSyncState(FIELDS_LAST_KEY);
 }
 
 /**
@@ -580,6 +592,7 @@ export async function getCacheStats() {
     { rows: stateRows },
     { rows: gapRows },
     lastFlagsRun,
+    lastFieldsRun,
     lastOrphanDedupe,
   ] = await Promise.all([
     query(
@@ -631,8 +644,20 @@ export async function getCacheStats() {
          from novo_crm_person_cache`
     ),
     getFlagsStageLastRun(),
+    getFieldsLastRun(),
     getOrphanDedupeLastRun(),
   ]);
+
+  // Antes da chave fields_last, o cron mode=fields gravava em flags_stage_last
+  // e o card Att mostrava a madrugada. Reclassifica esse residual.
+  let last_flags_sync = lastFlagsRun || null;
+  let last_fields_sync = lastFieldsRun || null;
+  if (isFieldsSyncMode(last_flags_sync)) {
+    const flagsAt = Date.parse(String(last_flags_sync.finished_at || '')) || 0;
+    const fieldsAt = Date.parse(String(last_fields_sync?.finished_at || '')) || 0;
+    if (!last_fields_sync || flagsAt >= fieldsAt) last_fields_sync = last_flags_sync;
+    last_flags_sync = null;
+  }
 
   return {
     total: countRows[0]?.total ?? 0,
@@ -645,7 +670,8 @@ export async function getCacheStats() {
     running: runningRows[0] || null,
     open_data_loss_events: eventRows[0]?.open_events ?? 0,
     state: stateRows[0] || null,
-    last_flags_sync: lastFlagsRun || null,
+    last_flags_sync,
+    last_fields_sync,
     last_orphan_dedupe: lastOrphanDedupe || null,
   };
 }
