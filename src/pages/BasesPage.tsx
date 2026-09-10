@@ -44,6 +44,11 @@ const SECTIONS: { id: ReportSlug; title: string; hint: string }[] = [
       'Alunos com mensalidade vencida (legado). Preferir uploads em Rematrícula (SIAA / Portal de Polos).',
   },
   {
+    id: 'inadimplentes-pos-siaa',
+    title: 'Inadimplente Pós SIAA',
+    hint: 'Export SIAA de mensalidade em aberto da Pós-Graduação.',
+  },
+  {
     id: 'acessos-blackboard',
     title: 'Acessos Blackboard',
     hint: 'Quem já acessou o BB (export por polo). Ativação = matriculados que não estão neste arquivo.',

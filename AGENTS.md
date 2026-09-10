@@ -5,6 +5,30 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-09-10 — Base «Inadimplente Pós SIAA» alimenta o campo Financeira
+- **Modelo usado:** Opus.
+- **Pedido:** upload de base nova (inadimplentes da Pós) e, quem aparecer nela, campo **Financeira** = Sim.
+- **Campo:** «Financeira» = `situacaofinanceira` = `cmrwtc7xp00fnpf015srkz771` = `NOVO_CRM_FIELD_INADIMPLENTE` = `fieldIds.inadimplente`. **Não** confundir com «Dia 10» (`dia`, `NOVO_CRM_FIELD_FINANCEIRO`), que continua vindo só da base `financeiro`.
+- **Base:** `inadimplentes-pos-siaa` (migration `044`). Export SIAA «Relação de Alunos Inadimplentes por Polo», arquivo único com todos os polos concatenados (13 no exemplo de 10/09).
+- **Import (`server/utils/inadPosSiaaImport.js`):** a 1ª linha é o **título** do relatório, então o parser genérico usa o título como header e o header real (`ID_POLO`, `NOME_POL`, `RGM_ALUN`, `NOME`, `NOM_FILI`, `DTA_VCTO`, `ATRASO`) cai como dado. `promoteInadPosSiaaHeader` promove esse header e **descarta as linhas de virada de polo** (título+header repetidos). Regra do descarte = linha **sem RGM** (o título repetido carrega o código do polo, então não dá pra detectar por `ID_POLO`). Metadata: `inad_pos_siaa_header_promoted` / `..._separator_rows_dropped`. O export só traz **RGM** — CPF/e-mail/telefone vêm do enrich pela Relação.
+- **Escopo das linhas:** o relatório lista **qualquer título em aberto** (MENSALIDADE, ACORDO \*, CONF.DIVIDA, MATRÍCULA) e mistura filiais (PÓS-EAD, Cursos Livres, Graduação UNICID/Cruzeiro). Só **MENSALIDADE** conta como inadimplência (quem negociou a dívida fica fora). Filtro em `baseRowFilterForCategory(category)` aplicado nos loaders de índice — o snapshot fica **fiel ao arquivo** (não perde quem está em acordo).
+- **Regra na Att:** `inad = mergeIdentityIndexes(inadGrad, inadPos)`. União nas **duas pontas**: só entrada faria o passo de saída limpar para «Não» todo aluno da Pós (ausente do relatório da Graduação) e vice-versa. `nRows` soma, então o guard de sanidade 70% continua proporcional. Mesma união no provision `mode=new` e nos órfãos.
+- **Cuidado:** `loadIdSetFromBase` dos provisionamentos lia só `RGM`/`rgm`/`Rgm` — passou a ler `RGM_ALUN` (o `pickIdentityFromRow` da Att já lia).
+- **Blindagem (a falha aqui é destrutiva — limpar flag de ~600 em massa):**
+ 1. `mergeIdentityIndexes` marca a fusão como quebrada se uma base **tem snapshot mas 0 identidades** (`cpf.size === 0 && rgm.size === 0` — testar `nRows` **não** serve, ele conta linha e sobrevive quando a coluna de identidade some). Nesse caso zera `nRows` → o guard 70% pula a saída da flag inteira e o `console.warn` nomeia a base. Prova empírica: snapshot Pós sem coluna de RGM → `exit_skipped_sanity: {"inadimplente":4}`, nada limpo.
+ 2. `isInadPosSiaaMensalidadeRow` é **fail-open**: sem coluna de tipo de título reconhecida (`DESCRICA`/`DESCRICA_2`/`DES_TITU`, em qualquer ordem) a linha **conta**. Fail-closed faria o índice vir vazio em silêncio e a Att limparia a Pós inteira.
+ 3. Descarte de separador roda mesmo sem promoção de cabeçalho (variante já parseada certa continua repetindo título/cabeçalho por polo), e só quando existe coluna `RGM_ALUN` — arquivo de outra base passa intacto.
+- **Uma base não zera a outra:** `getLatestSnapshot` é `order by created_at desc limit 1`, sem filtro de data — base não atualizada ≠ base vazia. Subir só a Graduação não encosta nas tabelas da Pós. Contrapartida: a flag é tão fresca quanto o último upload de cada base.
+- **Medido (10/09):** 684 linhas · 681 alunos · 670 na Relação · 636 com deal (109 Financeira vazia, 520 «Não», 9 já «Sim»). Dry-run `flags_stage`: **721** flags (741 sem o filtro de MENSALIDADE), `exit_skipped_sanity` vazio, 0 erros.
+- **Ops:** migration `044` já aplicada. Merge `raphael` + rebuild antes de clicar Att — sem o deploy o snapshot fica parado (o cron `mode=fields` das 05:00 **não** escreve flags).
+- **Não mudou:** «Dia 10»; cron FLAGS/provision off; rate 2.
+
+### 2026-09-01 — Fields da madrugada não pisa o card Att
+- **Modelo usado:** Grok.
+- **Fato:** cron `mode=fields` (~05:00) usa o mesmo job que o botão Att. Gravava em `flags_stage_last` → o card «Att de etapas» mostrava a madrugada (ex. 01/09 07:27, 0 flags · 320 etapas · fila 25k = campos SIAA) como se fosse Att, e a barra dizia «Att rodando».
+- **Código:** `mode=fields` persiste em `fields_last` / `last_fields_sync`. Residual antigo com `mode=fields` no `flags_stage_last` some do card Att. UI: Att só mostra última `flags_stage`; bloco «De noite» mostra última Att campos. Job fields na barra = «Att campos (madrugada)».
+- **Não mudou:** cron FLAGS off; fields ainda move etapa (remat/turma); mutex único (não roda Att e fields juntos).
+
 ### 2026-08-31 — API PROD: integrations.bwipo.com (token só nesse host)
 - **Modelo usado:** Grok.
 - **Fato:** token novo `eduit_…` autentica em `https://integrations.bwipo.com`. O host antigo `cruzeiro-ead.bwipo.com` responde 401: tokens de API só são aceitos no domínio de integrações. Mesma org (`cmrmbn2lh0uz2nm016beqgbwb`); `/api/tags` 232 · deals 42.797 · contacts 43.282 · IDs de etapa/campo iguais (CPF/CAA/Situação/Marco ok).

@@ -11,6 +11,7 @@ const ACTIVATION_BLOCK_IDS = new Set([
   'docs-pendentes',
   'financeiro',
   'inadimplentes-vencidos',
+  'inadimplentes-pos-siaa',
   'provavel-evasao',
   'acessos-blackboard',
   'processos-caa',

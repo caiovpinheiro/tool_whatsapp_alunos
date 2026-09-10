@@ -44,6 +44,12 @@ const REPORT_CARDS: {
       'Mensalidade vencida (após o prazo). Base legada; rematrícula usa SIAA/Portal em Bases.',
   },
   {
+    id: 'inadimplentes-pos-siaa',
+    title: 'Inadimplente Pós SIAA',
+    description:
+      'Export SIAA de mensalidade em aberto da Pós. Último snapshot importado em Bases; cruzamento no painel de comparação.',
+  },
+  {
     id: 'rematricula',
     title: 'Rematrícula',
     description:

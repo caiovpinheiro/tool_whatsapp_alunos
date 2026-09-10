@@ -46,6 +46,7 @@ import {
 import { displayRgmFromMatriculadosRow } from '../utils/rgmDisplay.js';
 import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
 import { fixaDateFieldPairs } from '../utils/fixaMatriculaDates.js';
+import { baseRowFilterForCategory } from '../utils/inadPosSiaaImport.js';
 import { cpfDigitsFromExcelCell } from '../utils/excelNumericCell.js';
 import {
   addTagToDeal,
@@ -510,9 +511,11 @@ async function loadIdSetFromBase(category) {
   const set = new Set();
   const snap = await baseUploadRepo.getLatestSnapshot(category);
   if (!snap?.id) return set;
+  const rowFilter = baseRowFilterForCategory(category);
   await baseUploadRepo.forEachRowDataForSnapshot(category, snap.id, (row) => {
+    if (rowFilter && !rowFilter(row)) return;
     const cpf = digits(row.CPF || row.cpf || row.Cpf);
-    const rgm = digits(row.RGM || row.rgm || row.Rgm);
+    const rgm = digits(row.RGM || row.rgm || row.Rgm || row.RGM_ALUN);
     if (cpf.length >= 11) set.add(`cpf:${cpf}`);
     if (rgm) set.add(`rgm:${rgm}`);
   });
@@ -1383,16 +1386,20 @@ export async function runOrphanAlunoProvision(opts = {}) {
   }
 
   beginPhase('load_bases', 0, 'Carregando bases satélite…');
-  const [remat, caaT0Map, caaSeen, doc, inad, fin, bb, evasao] = await Promise.all([
-    loadIdSetFromBase('rematricula'),
-    caaProtocolsRepo.loadOpenCaaT0Map(),
-    caaProtocolsRepo.loadSeenCaaIdSet(),
-    loadIdSetFromBase('docs-pendentes'),
-    loadIdSetFromBase('inadimplentes-vencidos'),
-    loadIdSetFromBase('financeiro'),
-    loadIdSetFromBase('acessos-blackboard'),
-    loadIdSetFromBase('provavel-evasao'),
-  ]);
+  const [remat, caaT0Map, caaSeen, doc, inadGrad, inadPos, fin, bb, evasao] =
+    await Promise.all([
+      loadIdSetFromBase('rematricula'),
+      caaProtocolsRepo.loadOpenCaaT0Map(),
+      caaProtocolsRepo.loadSeenCaaIdSet(),
+      loadIdSetFromBase('docs-pendentes'),
+      loadIdSetFromBase('inadimplentes-vencidos'),
+      loadIdSetFromBase('inadimplentes-pos-siaa'),
+      loadIdSetFromBase('financeiro'),
+      loadIdSetFromBase('acessos-blackboard'),
+      loadIdSetFromBase('provavel-evasao'),
+    ]);
+  // Flag «Financeira»: vencidos da Graduação + inadimplentes da Pós.
+  const inad = new Set([...inadGrad, ...inadPos]);
 
   beginPhase('scan_mirror', 0, 'Escaneando espelho (órfãos / incompletos)…');
   const cacheRows = await cacheRepo.listActiveCacheRowsForEnrichment({ scope: 'all_mapped', limit: 100000 });

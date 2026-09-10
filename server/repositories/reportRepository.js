@@ -64,6 +64,7 @@ const REPORT_TYPES = new Set([
   'docs-pendentes',
   'financeiro',
   'inadimplentes-vencidos',
+  'inadimplentes-pos-siaa',
   'acessos-blackboard',
   'processos-caa',
   'provavel-evasao',

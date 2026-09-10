@@ -14,8 +14,9 @@ import {
   normalizeRowRgms,
 } from '../utils/rgmDisplay.js';
 import { repairSiaaRematriculaRow } from '../utils/siaaRematriculaRepair.js';
+import { promoteInadPosSiaaHeader } from '../utils/inadPosSiaaImport.js';
 
-/** @typedef {'matriculados'|'docs-pendentes'|'financeiro'|'inadimplentes-vencidos'|'rematricula'|'acessos-blackboard'|'processos-caa'|'provavel-evasao'} BaseCategory */
+/** @typedef {'matriculados'|'docs-pendentes'|'financeiro'|'inadimplentes-vencidos'|'inadimplentes-pos-siaa'|'rematricula'|'acessos-blackboard'|'processos-caa'|'provavel-evasao'} BaseCategory */
 
 export const REMATRICULA_SOURCES = /** @type {const} */ (['siaa', 'portal-de-polos']);
 
@@ -24,6 +25,7 @@ export const BASE_CATEGORIES = /** @type {const} */ ([
   'docs-pendentes',
   'financeiro',
   'inadimplentes-vencidos',
+  'inadimplentes-pos-siaa',
   'rematricula',
   'acessos-blackboard',
   'processos-caa',
@@ -37,6 +39,10 @@ const TABLES = {
   'inadimplentes-vencidos': {
     snapshots: 'inadimplentes_vencidos_snapshots',
     rows: 'inadimplentes_vencidos_rows',
+  },
+  'inadimplentes-pos-siaa': {
+    snapshots: 'inadimplentes_pos_siaa_snapshots',
+    rows: 'inadimplentes_pos_siaa_rows',
   },
   rematricula: { snapshots: 'rematricula_snapshots', rows: 'rematricula_rows' },
   'acessos-blackboard': { snapshots: 'acessos_blackboard_snapshots', rows: 'acessos_blackboard_rows' },
@@ -157,6 +163,15 @@ export async function createSnapshotFromRowObjects(category, input) {
   const { snapshots: st, rows: rt } = resolveTables(category);
   let objects = input.objects || [];
   const meta = input.metadata && typeof input.metadata === 'object' ? { ...input.metadata } : {};
+
+  if (category === 'inadimplentes-pos-siaa' && objects.length) {
+    // 1ª linha do export é o título do relatório; o cabeçalho real vem depois.
+    // O arquivo concatena os polos e repete título + cabeçalho em cada um.
+    const promoted = promoteInadPosSiaaHeader(objects);
+    objects = promoted.rows;
+    meta.inad_pos_siaa_header_promoted = promoted.promoted;
+    meta.inad_pos_siaa_separator_rows_dropped = promoted.separatorsDropped;
+  }
 
   if (objects.length) {
     if (category === 'matriculados') {

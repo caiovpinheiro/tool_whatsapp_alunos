@@ -6,6 +6,7 @@ export type ReportSlug =
   | 'docs-pendentes'
   | 'financeiro'
   | 'inadimplentes-vencidos'
+  | 'inadimplentes-pos-siaa'
   | 'rematricula'
   | 'acessos-blackboard'
   | 'processos-caa'

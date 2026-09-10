@@ -94,6 +94,7 @@ import { isNovoCrmWriteAllowedOnThisHost } from './novoCrmMatriculadosProvisionS
 import { isNovoCrmCacheSyncRunning } from './novoCrmPersonCacheSyncService.js';
 import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
 import { fixaDateFieldPairs } from '../utils/fixaMatriculaDates.js';
+import { baseRowFilterForCategory } from '../utils/inadPosSiaaImport.js';
 
 function digits(v) {
   return String(v ?? '').replace(/\D/g, '');
@@ -178,7 +179,9 @@ function ensureAtualizadoSim(values, fieldIds) {
  * Fluxo: ler o que o arquivo trouxer → enriquecer via matriculados (RGM/CPF)
  * para completar cpf/email/telefone → indexar. Email/phone só entram se
  * ÚNICOS no índice final. `nRows` = linhas do snapshot satélite.
- * @typedef {{ cpf: Set<string>, rgm: Set<string>, email: Set<string>, phone: Set<string>, nRows: number }} IdentityIndex
+ * `hasSnapshot` distingue "base nunca subida" de "base subida que não rendeu
+ * identidade nenhuma" — a segunda é sinal de import quebrado.
+ * @typedef {{ cpf: Set<string>, rgm: Set<string>, email: Set<string>, phone: Set<string>, nRows: number, category?: string, hasSnapshot?: boolean }} IdentityIndex
  */
 
 /** @returns {{cpf:string,rgm:string,email:string,phone:string}} */
@@ -221,14 +224,25 @@ function enrichIdentityFromMatriculados(id, byRgm, byCpf) {
  */
 async function loadIdentityIndexFromBase(category, matLookups = null) {
   /** @type {IdentityIndex} */
-  const index = { cpf: new Set(), rgm: new Set(), email: new Set(), phone: new Set(), nRows: 0 };
+  const index = {
+    cpf: new Set(),
+    rgm: new Set(),
+    email: new Set(),
+    phone: new Set(),
+    nRows: 0,
+    category,
+    hasSnapshot: false,
+  };
   const snap = await baseUploadRepo.getLatestSnapshot(category);
   if (!snap?.id) return index;
+  index.hasSnapshot = true;
   const emailCount = new Map();
   const phoneCount = new Map();
   const byRgm = matLookups?.byRgm || null;
   const byCpf = matLookups?.byCpf || null;
+  const rowFilter = baseRowFilterForCategory(category);
   await baseUploadRepo.forEachRowDataForSnapshot(category, snap.id, (row) => {
+    if (rowFilter && !rowFilter(row)) return;
     index.nRows += 1;
     const id = enrichIdentityFromMatriculados(pickIdentityFromRow(row), byRgm, byCpf);
     if (id.cpf) index.cpf.add(id.cpf);
@@ -239,6 +253,40 @@ async function loadIdentityIndexFromBase(category, matLookups = null) {
   for (const [email, n] of emailCount) if (n === 1) index.email.add(email);
   for (const [phone, n] of phoneCount) if (n === 1) index.phone.add(phone);
   return index;
+}
+
+/**
+ * União de índices satélite — usado quando uma flag do CRM é alimentada por
+ * mais de um relatório (ex. «Financeira» = vencidos Grad + inadimplentes Pós).
+ * `nRows` soma para o guard de sanidade da saída continuar proporcional.
+ * @param {...IdentityIndex} indexes
+ * @returns {IdentityIndex}
+ */
+function mergeIdentityIndexes(...indexes) {
+  /** @type {IdentityIndex} */
+  const out = { cpf: new Set(), rgm: new Set(), email: new Set(), phone: new Set(), nRows: 0 };
+  let broken = false;
+  for (const idx of indexes) {
+    if (!idx) continue;
+    // Snapshot existe mas não rendeu identidade nenhuma = import/filtro
+    // quebrado (cabeçalho não promovido, coluna renomeada, filtro zerando
+    // tudo). Testa CPF/RGM, não `nRows` — linha existe mesmo quando a coluna
+    // de identidade sumiu. Zera nRows: o guard de sanidade pula a saída da
+    // flag inteira em vez de limpar em massa quem só aparece nessa base.
+    if (idx.hasSnapshot && idx.cpf.size === 0 && idx.rgm.size === 0) {
+      broken = true;
+      console.warn(
+        `[novo-crm-flags-sync] base "${idx.category}": snapshot com ${idx.nRows} linha(s) mas 0 identidades — saída da flag desligada por segurança.`
+      );
+    }
+    for (const v of idx.cpf) out.cpf.add(v);
+    for (const v of idx.rgm) out.rgm.add(v);
+    for (const v of idx.email) out.email.add(v);
+    for (const v of idx.phone) out.phone.add(v);
+    out.nRows += Number(idx.nRows) || 0;
+  }
+  if (broken) out.nRows = 0;
+  return out;
 }
 
 /**
@@ -634,16 +682,23 @@ export async function runFlagsStageSync(opts = {}) {
   }
 
   const matLookups = { byRgm, byCpf };
-  const [remat, caaT0Map, caaSeenSet, doc, inad, fin, bb, evasao] = await Promise.all([
-    loadIdentityIndexFromBase('rematricula', matLookups),
-    caaProtocolsRepo.loadOpenCaaT0Map(),
-    caaProtocolsRepo.loadSeenCaaIdSet(),
-    loadIdentityIndexFromBase('docs-pendentes', matLookups),
-    loadIdentityIndexFromBase('inadimplentes-vencidos', matLookups),
-    loadIdentityIndexFromBase('financeiro', matLookups),
-    loadIdentityIndexFromBase('acessos-blackboard', matLookups),
-    loadIdentityIndexFromBase('provavel-evasao', matLookups),
-  ]);
+  const [remat, caaT0Map, caaSeenSet, doc, inadGrad, inadPos, fin, bb, evasao] =
+    await Promise.all([
+      loadIdentityIndexFromBase('rematricula', matLookups),
+      caaProtocolsRepo.loadOpenCaaT0Map(),
+      caaProtocolsRepo.loadSeenCaaIdSet(),
+      loadIdentityIndexFromBase('docs-pendentes', matLookups),
+      loadIdentityIndexFromBase('inadimplentes-vencidos', matLookups),
+      loadIdentityIndexFromBase('inadimplentes-pos-siaa', matLookups),
+      loadIdentityIndexFromBase('financeiro', matLookups),
+      loadIdentityIndexFromBase('acessos-blackboard', matLookups),
+      loadIdentityIndexFromBase('provavel-evasao', matLookups),
+    ]);
+  // Campo CRM «Financeira» (situacaofinanceira) = vencidos da Graduação (SIAA
+  // web) + inadimplentes da Pós (export SIAA por polo). União nas duas pontas:
+  // entrada marca Sim, e o passo de saída só limpa quem não está em nenhuma
+  // das duas — senão uma base zeraria a flag da outra.
+  const inad = mergeIdentityIndexes(inadGrad, inadPos);
   const caaRetencaoHours = getCaaRetencaoHours();
   const caaSeen = identityIndexFromCaaIdSet(caaSeenSet);
   const stageIds = getNovoCrmStageIds();
@@ -1761,9 +1816,13 @@ export async function runFlagsStageSync(opts = {}) {
             sent: flagsUpdated + stagesMoved + fieldsUpdated,
             matched,
             flags_updated: flagsUpdated,
+            fields_updated: fieldsUpdated,
             stages_moved: stagesMoved,
             eta_ms: etaMs,
-            status_message: `Gravados ${written}/${workQueue.length}… · flags ${flagsUpdated} · etapas ${stagesMoved}`,
+            status_message:
+              mode === 'fields'
+                ? `Gravados ${written}/${workQueue.length}… · campos ${fieldsUpdated} · etapas ${stagesMoved}`
+                : `Gravados ${written}/${workQueue.length}… · flags ${flagsUpdated} · etapas ${stagesMoved}`,
           });
         }
       }

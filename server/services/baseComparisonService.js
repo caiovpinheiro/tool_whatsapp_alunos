@@ -353,6 +353,11 @@ const COMPARISONS = [
     mode: 'other_is_problem_list',
   },
   {
+    id: 'inadimplentes-pos-siaa',
+    title: 'Inadimplente Pós SIAA',
+    mode: 'other_is_problem_list',
+  },
+  {
     id: 'provavel-evasao',
     title: 'Provável evasão',
     mode: 'other_is_problem_list',
