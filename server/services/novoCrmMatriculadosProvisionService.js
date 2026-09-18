@@ -132,16 +132,58 @@ function provisionNeed(cpf, personRows, sets) {
 
 function panelFieldValue(dealDetail, names) {
   const wanted = names.map((n) => n.toLowerCase());
+  const fieldIds = getNovoCrmDealFieldIds();
+  const wantedIds = new Set();
+  if (wanted.includes('rgm') && fieldIds.rgm) wantedIds.add(String(fieldIds.rgm));
+  if (wanted.some((n) => n === 'cpf' || n === 'documento' || n === 'taxid') && fieldIds.cpf) {
+    wantedIds.add(String(fieldIds.cpf));
+  }
   const fields = dealDetail?.dealPanelFields || dealDetail?.customFields || [];
   for (const f of fields) {
     const name = String(f?.name || f?.label || '')
       .trim()
       .toLowerCase();
-    if (wanted.includes(name) && f?.value != null && String(f.value).trim() !== '') {
-      return String(f.value).trim();
-    }
+    const id = String(f?.id || f?.fieldId || f?.customFieldId || '').trim();
+    if (f?.value == null || String(f.value).trim() === '') continue;
+    if (wanted.includes(name) || wantedIds.has(id)) return String(f.value).trim();
   }
   return '';
+}
+
+function listHasFieldValues(deal) {
+  const fields = deal?.dealPanelFields || deal?.customFields;
+  if (!Array.isArray(fields) || !fields.length) return false;
+  return fields.some((f) => f?.value != null && String(f.value).trim() !== '');
+}
+
+/**
+ * GET live frequentemente volta sem customFields (lista sem panel / FETCH=0).
+ * Sem o overlay do espelho, todo deal parece vazio e a prévia «preenche»
+ * por cima do RGM antigo.
+ */
+function applyCacheIdentity(live, cacheIdent) {
+  if (!cacheIdent) return;
+  let mapped = 0;
+  for (const deal of live.deals || []) {
+    if (deal.rgm) {
+      live.rgms.add(deal.rgm);
+      mapped += 1;
+      continue;
+    }
+    const cached = cacheIdent.byDealId.get(String(deal.id));
+    if (cached) {
+      deal.rgm = cached;
+      live.rgms.add(cached);
+      mapped += 1;
+    }
+  }
+  if (cacheIdent.contactRgm) live.rgms.add(cacheIdent.contactRgm);
+  if (cacheIdent.contactRgm && (live.deals || []).length === 1 && !live.deals[0].rgm) {
+    live.deals[0].rgm = cacheIdent.contactRgm;
+    mapped += 1;
+  }
+  live.cacheHasRgm = Boolean(cacheIdent.contactRgm || cacheIdent.byDealId.size);
+  live.cacheMappedDeals = mapped;
 }
 
 function namesPlausiblyMatch(contactName, sourceName) {
@@ -181,8 +223,7 @@ async function liveIdentityOnContact(contactId) {
     for (const d of items) {
       if (!d?.id) continue;
       let detail = d;
-      const hasPanel = Array.isArray(d.dealPanelFields) || Array.isArray(d.customFields);
-      if (!hasPanel) {
+      if (!listHasFieldValues(d)) {
         try {
           detail = (await getDeal(d.id)) || d;
         } catch {
@@ -212,8 +253,11 @@ async function liveIdentityOnContact(contactId) {
  * ainda tiver menos deals que RGMs no SIAA (anti-spam Naionara/Everton).
  */
 function planExistingDealWork(live, classifications, siaaRgmCount) {
-  const emptyDeals = (live.deals || []).filter((d) => d.id && !d.rgm);
   const leftover = classifications.filter((c) => c.rgm && !live.rgms.has(c.rgm));
+  // Espelho tem RGM neste contact, mas o GET não mapeou nenhum deal →
+  // preencher seria pisar o card antigo (prévia 18/09: 1404 «vazio» falso).
+  const canFill = !live.cacheHasRgm || (live.deals || []).some((d) => d.rgm);
+  const emptyDeals = canFill ? (live.deals || []).filter((d) => d.id && !d.rgm) : [];
   const fills = [];
   for (const deal of emptyDeals) {
     const next = leftover.shift();
@@ -794,6 +838,15 @@ export async function runMatriculadosProvision(opts = {}) {
       if (!live.ok) {
         noteError({ cpf, error: 'live_deals: leitura falhou' });
         return;
+      }
+      try {
+        applyCacheIdentity(live, await cacheRepo.loadContactDealRgms(String(existing.id)));
+      } catch (err) {
+        console.warn(
+          '[novo-crm-provision] cache identity overlay failed',
+          existing.id,
+          err?.message || err
+        );
       }
 
       const { fills, extras, suppressed } = planExistingDealWork(

@@ -15,8 +15,9 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
   3. Pessoa já no CRM → cria **só** o deal do RGM que falta **no contact existente** (`cpfToContactId` do espelho; senão `findExistingContact`). Não cria 2º contact.
   4. Live `listDeals` no contact: deal **sem RGM** (captura WhatsApp) → **preenche** CPF/RGM/SIAA no card que já existe e move etapa se não for intocável. Só cria deal extra se ainda sobrar RGM depois de preencher **e** `dealCount < N RGMs SIAA`. `dealCount >= N` → não clona (anti-spam Naionara/Everton).
   5. Match só por e-mail/telefone exige `namesPlausiblyMatch`.
+  6. **Overlay do espelho antes de preencher.** `GET /deals` / lista por contact muitas vezes volta sem `dealPanelFields` (array vazio conta como «tem panel»). Prévia PROD 18/09: **1.404 preencher + 127 extra** — a conta 149+1404=1553 fecha, mas o live via RGM vazio em card que o cache já tinha (ex. Gustavo `48317667`). Aplicar pisaria o RGM antigo. Fill só se live **e** cache dizem vazio; se o cache tem RGM e o GET não mapeou o deal, cria extra em vez de preencher.
 - **Contadores:** `filled_existing_deals`, `created_extra_deals`, `skipped_live_rgm_covered`, `skipped_cpf_capacity`, `skipped_name_mismatch`. Cap 1500 conta pessoas provisionadas (novo + fill + extra).
-- **Ops:** merge `raphael` + rebuild. Depois: **Prévia leads novos** — deve listar o Gustavo e os ~738. Apply cria os deals. A Att seguinte classifica/flag. Cron provision continua OFF.
+- **Ops:** **não Aplicar** a prévia 1.404/127. Merge `raphael` + rebuild. Nova prévia: fill deve cair (~card WhatsApp sem identidade); extra sobe (~2º RGM, incl. Gustavo). Apply só depois. Cron provision continua OFF.
 - **Não mudou:** Att/fields não cria; 1 deal por RGM; rate 2; intocáveis.
 
 ### 2026-09-10 — Base «Inadimplente Pós SIAA» alimenta o campo Financeira

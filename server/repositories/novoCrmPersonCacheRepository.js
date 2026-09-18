@@ -266,6 +266,45 @@ const RGM_FIELD_NAMES = new Set(['rgm']);
 const CPF_FIELD_IDS = new Set(['cmrnpd33ekm5snm01jecpmevp']);
 const RGM_FIELD_IDS = new Set(['cmrmexurt18tfnm01e6krzug6']);
 
+function rgmFromDealFields(deal) {
+  const fields = deal?.customFields;
+  if (!Array.isArray(fields)) return '';
+  for (const field of fields) {
+    const name = String(field?.name || '').trim().toLowerCase();
+    const id = String(field?.id || '').trim();
+    const val = field?.value;
+    if (val == null || String(val).trim() === '') continue;
+    if (RGM_FIELD_NAMES.has(name) || RGM_FIELD_IDS.has(id)) {
+      return normalizeRgm(val) || '';
+    }
+  }
+  return normalizeRgm(deal?.rgm) || '';
+}
+
+/**
+ * RGM do contact + RGM por deal no espelho. Usado pela criação de leads
+ * para não tratar deal com RGM no cache como «vazio» quando o GET live
+ * não devolve customFields.
+ * @param {string} contactId
+ */
+export async function loadContactDealRgms(contactId) {
+  const row = await loadExisting(contactId);
+  /** @type {Map<string, string>} */
+  const byDealId = new Map();
+  if (!row) return { contactRgm: '', byDealId };
+  const deals = row.raw_data?.dealsById;
+  if (deals && typeof deals === 'object') {
+    for (const [id, deal] of Object.entries(deals)) {
+      const rgm = rgmFromDealFields(deal);
+      if (rgm) byDealId.set(String(id), rgm);
+    }
+  }
+  return {
+    contactRgm: normalizeRgm(row.rgm_norm) || '',
+    byDealId,
+  };
+}
+
 function extractCpfRgmFromRaw(rawData) {
   const deals = rawData?.dealsById;
   if (!deals || typeof deals !== 'object') return { cpf: null, rgm: null };
