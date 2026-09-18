@@ -562,7 +562,7 @@ export async function markDeletedNotSeenSince(fullSeenAt) {
  */
 export async function loadExistingCpfRgmSets() {
   const { rows } = await query(
-    `select cpf_norm, rgm_norm, email_norm, phone_norm
+    `select contact_id, primary_deal_id, cpf_norm, rgm_norm, email_norm, phone_norm
        from novo_crm_person_cache
       where is_deleted = false`
   );
@@ -570,17 +570,27 @@ export async function loadExistingCpfRgmSets() {
   const rgms = new Set();
   const emails = new Set();
   const phones = new Set();
+  /** @type {Map<string, string>} */
+  const cpfToContactId = new Map();
+  const cpfHasDeal = new Set();
   for (const r of rows) {
     const c = String(r.cpf_norm || '').replace(/\D/g, '');
     const g = String(r.rgm_norm || '').replace(/\D/g, '');
     const e = String(r.email_norm || '').trim().toLowerCase();
     const p = String(r.phone_norm || '').replace(/\D/g, '');
-    if (c.length >= 11) cpfs.add(c);
+    if (c.length >= 11) {
+      cpfs.add(c);
+      // Prefere o contact que já tem negócio — é nele que o 2º RGM deve nascer.
+      if (!cpfToContactId.has(c) || (r.primary_deal_id && !cpfHasDeal.has(c))) {
+        cpfToContactId.set(c, String(r.contact_id));
+      }
+      if (r.primary_deal_id) cpfHasDeal.add(c);
+    }
     if (g) rgms.add(g);
     if (e.includes('@')) emails.add(e);
     if (p.length >= 10) phones.add(p);
   }
-  return { cpfs, rgms, emails, phones };
+  return { cpfs, rgms, emails, phones, cpfToContactId };
 }
 
 export async function getCacheStats() {

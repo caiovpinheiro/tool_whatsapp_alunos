@@ -5,6 +5,20 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-09-18 — Criação diária também cobre 2º RGM (buraco do Gustavo)
+- **Modelo usado:** Grok.
+- **Caso:** RGM `49825089` Gustavo Nascimento Barbosa — EM CURSO Ciência de Dados, Relação do dia. Já tinha deal do RGM antigo `48317667` (Contábeis CANCELADO). `mode=new` agrupava por CPF e `cacheCoverageKind` pulava a pessoa inteira se o CPF já estava no espelho. Dedupe de órfãos também não pega (órfão = contact sem deal).
+- **Medido (17/09):** Relação × espelho — **826** RGMs EM CURSO sem deal cujo CPF já tem card (738 pessoas). +326 EM CURSO com CPF novo (o botão antigo já pegaria).
+- **Decisão:** Att de etapas **não cria** card (não muda). O buraco fecha no botão **«3. Criação de leads novos»**:
+  1. Seleção passa a ser **RGM faltante**, não «pessoa ausente». CPF/e-mail/telefone no cache **não** escondem um RGM novo.
+  2. Pessoa nova → contact + deal (igual).
+  3. Pessoa já no CRM → cria **só** o deal do RGM que falta **no contact existente** (`cpfToContactId` do espelho; senão `findExistingContact`). Não cria 2º contact.
+  4. Live `listDeals` no contact: deal **sem RGM** (captura WhatsApp) → **preenche** CPF/RGM/SIAA no card que já existe e move etapa se não for intocável. Só cria deal extra se ainda sobrar RGM depois de preencher **e** `dealCount < N RGMs SIAA`. `dealCount >= N` → não clona (anti-spam Naionara/Everton).
+  5. Match só por e-mail/telefone exige `namesPlausiblyMatch`.
+- **Contadores:** `filled_existing_deals`, `created_extra_deals`, `skipped_live_rgm_covered`, `skipped_cpf_capacity`, `skipped_name_mismatch`. Cap 1500 conta pessoas provisionadas (novo + fill + extra).
+- **Ops:** merge `raphael` + rebuild. Depois: **Prévia leads novos** — deve listar o Gustavo e os ~738. Apply cria os deals. A Att seguinte classifica/flag. Cron provision continua OFF.
+- **Não mudou:** Att/fields não cria; 1 deal por RGM; rate 2; intocáveis.
+
 ### 2026-09-10 — Base «Inadimplente Pós SIAA» alimenta o campo Financeira
 - **Modelo usado:** Opus.
 - **Pedido:** upload de base nova (inadimplentes da Pós) e, quem aparecer nela, campo **Financeira** = Sim.

@@ -4,9 +4,11 @@
  * PROD: NOVO_CRM_PROVISION_ALLOW_PROD=1 + URL explícita (também libera fields/flags writers).
  *
  * Modes:
- *   new (default UI) — snapshot atual ausente do espelho (CPF/RGM) + live
- *     check. Não exige delta vs snapshot anterior. Cap default 200; UI passa
- *     até 1500 para o buraco de quem nunca foi criado.
+ *   new (default UI) — RGM da Relação ausente do espelho + live check.
+ *     Pessoa nova → cria contact+deal. Pessoa já no CRM com RGM novo
+ *     (2ª matrícula / 2º curso) → cria só o deal faltante no contact
+ *     existente. Não exige delta vs snapshot anterior. Cap default 200;
+ *     UI passa até 1500.
  *   all — backlog completo (backfill; exige PROVISION_ENABLED).
  *
  * Cron noturno: OFF por padrão (NOVO_CRM_PROVISION_ENABLED≠1). Criação diária
@@ -31,6 +33,7 @@ import {
   classifyMatriculado,
   getNovoCrmDealFieldIds,
   isProdCrmHost,
+  isUntouchableStageId,
   phoneE164Br,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
@@ -41,14 +44,16 @@ import {
 import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
 import { fixaDateFieldPairs } from '../utils/fixaMatriculaDates.js';
 import { baseRowFilterForCategory } from '../utils/inadPosSiaaImport.js';
-import { normalizeCpf } from '../utils/novoCrmCacheNormalize.js';
+import { normalizeCpf, normalizeRgm } from '../utils/novoCrmCacheNormalize.js';
 import { tipoMatriculaFromRow } from '../utils/matriculadosTipoMatricula.js';
 import {
   createContact,
   createDeal,
-  findDealForContact,
+  getDeal,
   isNovoCrmApiConfigured,
+  listDealsPage,
   searchContacts,
+  updateDeal,
   updateDealCustomFields,
 } from './novoCrmClient.js';
 
@@ -83,17 +88,22 @@ function emailMatchKey(v) {
   return String(v ?? '').trim().toLowerCase();
 }
 
-/**
- * Quem já está no espelho (mesmo sem CPF/RGM no deal — Full Sync com
- * FETCH_DEAL_FIELDS=0). Evita GET /contacts?search= na Relação inteira.
- * @returns {'cpf'|'rgm'|'email'|'phone'|null}
- */
-function cacheCoverageKind(cpf, personRows, sets) {
+function rowRgm(row) {
+  return digits(extractMatriculadosMappedValues(row).rgm);
+}
+
+/** RGMs da Relação desta pessoa que ainda não estão no espelho. */
+function missingRgmRows(personRows, sets) {
+  return personRows.filter((r) => {
+    const rgm = rowRgm(r);
+    return Boolean(rgm) && !sets.rgms.has(rgm);
+  });
+}
+
+function contactMatchKind(cpf, personRows, sets) {
   if (cpf && sets.cpfs.has(cpf)) return 'cpf';
   for (const r of personRows) {
     const m = extractMatriculadosMappedValues(r);
-    const rgm = digits(m.rgm);
-    if (rgm && sets.rgms.has(rgm)) return 'rgm';
     for (const em of [emailMatchKey(m._email), emailMatchKey(m.e_mail_ad)]) {
       if (em && sets.emails.has(em)) return 'email';
     }
@@ -103,6 +113,115 @@ function cacheCoverageKind(cpf, personRows, sets) {
     }
   }
   return null;
+}
+
+/**
+ * Decide se a pessoa entra na fila de criação.
+ * Pula só quando TODOS os RGMs da Relação já estão no espelho.
+ * CPF/e-mail/telefone no cache já não escondem um RGM novo (2ª matrícula).
+ * @returns {{ skip: 'cpf'|'rgm'|'email'|'phone'|null, missingRows: Record<string, unknown>[] }}
+ */
+function provisionNeed(cpf, personRows, sets) {
+  const missing = missingRgmRows(personRows, sets);
+  if (missing.length) return { skip: null, missingRows: missing };
+  if (personRows.some((r) => rowRgm(r))) return { skip: 'rgm', missingRows: [] };
+  const kind = contactMatchKind(cpf, personRows, sets);
+  if (kind) return { skip: kind, missingRows: [] };
+  return { skip: null, missingRows: personRows };
+}
+
+function panelFieldValue(dealDetail, names) {
+  const wanted = names.map((n) => n.toLowerCase());
+  const fields = dealDetail?.dealPanelFields || dealDetail?.customFields || [];
+  for (const f of fields) {
+    const name = String(f?.name || f?.label || '')
+      .trim()
+      .toLowerCase();
+    if (wanted.includes(name) && f?.value != null && String(f.value).trim() !== '') {
+      return String(f.value).trim();
+    }
+  }
+  return '';
+}
+
+function namesPlausiblyMatch(contactName, sourceName) {
+  const tokens = (s) =>
+    String(s ?? '')
+      .toUpperCase()
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .replace(/[^A-Z0-9 ]/g, ' ')
+      .split(' ')
+      .filter((t) => t.length >= 3);
+  const a = tokens(contactName);
+  const b = tokens(sourceName);
+  if (!a.length || !b.length) return true;
+  const overlap = a.some((ta) =>
+    b.some((tb) => ta === tb || ta.startsWith(tb) || tb.startsWith(ta))
+  );
+  if (overlap) return true;
+  return a.length < 2;
+}
+
+/**
+ * RGMs/CPFs ao vivo no contact. Sem isso o path de 2º RGM recria deal
+ * quando o espelho está stale (Everton, 28/07) ou quando o writeback
+ * veio vazio (Naionara, 06/08 — dealCount >= N SIAA e rgms.size===0).
+ */
+async function liveIdentityOnContact(contactId) {
+  const rgms = new Set();
+  const cpfs = new Set();
+  /** @type {Array<{id:string, rgm:string, stageId:string}>} */
+  const deals = [];
+  let dealCount = 0;
+  try {
+    const page = await listDealsPage({ contactId, page: 1, perPage: 100 });
+    const items = page.items || [];
+    dealCount = items.length;
+    for (const d of items) {
+      if (!d?.id) continue;
+      let detail = d;
+      const hasPanel = Array.isArray(d.dealPanelFields) || Array.isArray(d.customFields);
+      if (!hasPanel) {
+        try {
+          detail = (await getDeal(d.id)) || d;
+        } catch {
+          detail = d;
+        }
+      }
+      const rgm = normalizeRgm(panelFieldValue(detail, ['rgm']));
+      const cpf = normalizeCpf(panelFieldValue(detail, ['cpf', 'documento', 'taxid']));
+      if (rgm) rgms.add(rgm);
+      if (cpf) cpfs.add(cpf);
+      deals.push({
+        id: String(d.id),
+        rgm: rgm || '',
+        stageId: String(detail.stageId || detail.stage?.id || d.stageId || ''),
+      });
+    }
+  } catch (err) {
+    console.warn('[novo-crm-provision] live identity failed', contactId, err?.message || err);
+    return { rgms, cpfs, deals, dealCount: -1, ok: false };
+  }
+  return { rgms, cpfs, deals, dealCount, ok: true };
+}
+
+/**
+ * Deal vazio (captura WhatsApp) recebe o RGM SIAA que falta.
+ * Só cria deal extra se ainda sobrar RGM depois de preencher e o contact
+ * ainda tiver menos deals que RGMs no SIAA (anti-spam Naionara/Everton).
+ */
+function planExistingDealWork(live, classifications, siaaRgmCount) {
+  const emptyDeals = (live.deals || []).filter((d) => d.id && !d.rgm);
+  const leftover = classifications.filter((c) => c.rgm && !live.rgms.has(c.rgm));
+  const fills = [];
+  for (const deal of emptyDeals) {
+    const next = leftover.shift();
+    if (!next) break;
+    fills.push({ deal, item: next });
+  }
+  const atCapacity = live.dealCount >= siaaRgmCount && (live.deals || []).length > 0;
+  return { fills, extras: atCapacity ? [] : leftover, suppressed: atCapacity ? leftover.length : 0 };
 }
 
 /**
@@ -354,12 +473,15 @@ export async function runMatriculadosProvision(opts = {}) {
   let existingRgms = new Set();
   let existingEmails = new Set();
   let existingPhones = new Set();
+  /** @type {Map<string, string>} */
+  let cpfToContactId = new Map();
   if (useCacheDedup) {
     try {
       const sets = await cacheRepo.loadExistingCpfRgmSets();
       existingCpfs = sets.cpfs;
       existingRgms = sets.rgms;
       existingEmails = sets.emails || new Set();
+      cpfToContactId = sets.cpfToContactId || new Map();
       for (const p of sets.phones || []) {
         const k = phoneMatchKey(p);
         if (k) existingPhones.add(k);
@@ -378,6 +500,7 @@ export async function runMatriculadosProvision(opts = {}) {
   let skippedNoCpf = 0;
   let createdContacts = 0;
   let createdDeals = 0;
+  let provisionedPeople = 0;
   let errors = 0;
   let aborted = false;
   let abortReason = null;
@@ -487,6 +610,11 @@ export async function runMatriculadosProvision(opts = {}) {
   let skippedCacheRgm = 0;
   let skippedCacheEmail = 0;
   let skippedCachePhone = 0;
+  let createdExtraDeals = 0;
+  let filledExistingDeals = 0;
+  let skippedLiveRgmCovered = 0;
+  let skippedCpfCapacity = 0;
+  let skippedNameMismatch = 0;
   let skippedNotDelta = 0;
   let updatedExisting = 0;
   let warmedCache = 0;
@@ -502,6 +630,7 @@ export async function runMatriculadosProvision(opts = {}) {
     rgms: existingRgms,
     emails: existingEmails,
     phones: existingPhones,
+    cpfToContactId,
   };
   const bumpCacheSkip = (kind) => {
     if (kind === 'cpf') skippedCache += 1;
@@ -515,12 +644,12 @@ export async function runMatriculadosProvision(opts = {}) {
   // do contact — senão a prévia GET /contacts?search= em ~36k pessoas.
   const gap = [];
   for (const [cpf, personRows] of groups.entries()) {
-    const kind = cacheCoverageKind(cpf, personRows, cacheSets);
-    if (kind) {
-      bumpCacheSkip(kind);
+    const need = provisionNeed(cpf, personRows, cacheSets);
+    if (need.skip) {
+      bumpCacheSkip(need.skip);
       continue;
     }
-    gap.push([cpf, personRows]);
+    gap.push([cpf, personRows, need.missingRows]);
   }
 
   const personList = gap.slice(offset);
@@ -557,16 +686,18 @@ export async function runMatriculadosProvision(opts = {}) {
 
   // Processa UMA pessoa (1 contato + N deals). Counters são compartilhados —
   // seguro porque JS é single-thread (sem corrida entre awaits).
-  const processPerson = async ([cpf, personRows]) => {
+  const processPerson = async ([cpf, personRows, missingRowsIn]) => {
     markCancelledByOperator();
     if (aborted) return;
 
     // Reserva slot ANTES de qualquer await de create — evita overshoot do maxCreates.
-    if (createdContacts >= maxCreates) return;
+    // O teto conta pessoas provisionadas (contato novo OU deal extra), não só
+    // contatos criados — senão o backlog de 2º RGM passaria sem limite.
+    if (provisionedPeople >= maxCreates) return;
     const reservedSlot = { claimed: false };
     const claimSlot = () => {
-      if (aborted || createdContacts >= maxCreates) return false;
-      createdContacts += 1;
+      if (aborted || provisionedPeople >= maxCreates) return false;
+      provisionedPeople += 1;
       reservedSlot.claimed = true;
       return true;
     };
@@ -574,11 +705,12 @@ export async function runMatriculadosProvision(opts = {}) {
     scanned += 1;
 
     // Idempotência via cache (rede de segurança — a fila já veio filtrada).
-    const cacheKind = cacheCoverageKind(cpf, personRows, cacheSets);
-    if (cacheKind) {
-      bumpCacheSkip(cacheKind);
+    const need = provisionNeed(cpf, personRows, cacheSets);
+    if (need.skip) {
+      bumpCacheSkip(need.skip);
       return;
     }
+    const missingRows = need.missingRows.length ? need.missingRows : missingRowsIn || personRows;
 
     const firstMapped = extractMatriculadosMappedValues(personRows[0]);
     const nome = firstMapped._nome_full || firstMapped.primeiro_nome || 'Aluno SIAA';
@@ -594,7 +726,8 @@ export async function runMatriculadosProvision(opts = {}) {
       return;
     }
 
-    const classifications = personRows.map((r) => {
+    const siaaRgmCount = new Set(personRows.map((r) => rowRgm(r)).filter(Boolean)).size;
+    const classifications = missingRows.map((r) => {
       const m = extractMatriculadosMappedValues(r);
       const rgm = digits(m.rgm);
       return {
@@ -619,36 +752,179 @@ export async function runMatriculadosProvision(opts = {}) {
     // criam leads durante o dia. Tanto a prévia quanto o apply consultam o CRM
     // ao vivo e sincronizam hits no espelho sem alterar o card.
     let existing = null;
+    let matchedByKind = null;
     try {
-      const found = await findExistingContact({
-        cpf,
-        phone: firstMapped._phone || firstMapped.telefone_comercial,
-        email: firstMapped._email,
-      });
-      existing = found.contact;
-      if (found.matchedBy) matchedBy[found.matchedBy] += 1;
-      searchFuzzyRejected += found.rejected;
+      const cachedId = cacheSets.cpfToContactId.get(cpf);
+      if (cachedId) {
+        existing = { id: cachedId };
+        matchedByKind = 'cpf';
+        matchedBy.cpf += 1;
+      } else {
+        const found = await findExistingContact({
+          cpf,
+          phone: firstMapped._phone || firstMapped.telefone_comercial,
+          email: firstMapped._email,
+        });
+        existing = found.contact;
+        matchedByKind = found.matchedBy;
+        if (found.matchedBy) matchedBy[found.matchedBy] += 1;
+        searchFuzzyRejected += found.rejected;
+      }
     } catch (err) {
       noteError({ cpf, error: `search: ${err?.message || err}` });
       return;
     }
 
     if (existing?.id) {
-      updatedExisting += 1;
-      skippedExisting += 1;
-      // Cartão nasceu mas o PUT de campos falhou (fieldId morto). Retry
-      // não cria de novo — preenche o deal vazio que já existe.
-      if (!dryRun && classifications[0]) {
+      if (
+        (matchedByKind === 'phone' || matchedByKind === 'email') &&
+        !namesPlausiblyMatch(existing.name || existing.nome, nome)
+      ) {
+        skippedNameMismatch += 1;
+        return;
+      }
+
+      let live = { rgms: new Set(), cpfs: new Set(), deals: [], dealCount: 0, ok: true };
+      try {
+        live = await liveIdentityOnContact(existing.id);
+      } catch (err) {
+        noteError({ cpf, error: `live_deals: ${err?.message || err}` });
+        return;
+      }
+      if (!live.ok) {
+        noteError({ cpf, error: 'live_deals: leitura falhou' });
+        return;
+      }
+
+      const { fills, extras, suppressed } = planExistingDealWork(
+        live,
+        classifications,
+        siaaRgmCount
+      );
+      if (suppressed) skippedCpfCapacity += 1;
+      if (!fills.length && !extras.length) {
+        updatedExisting += 1;
+        skippedExisting += 1;
+        skippedLiveRgmCovered += 1;
         try {
-          const deal = await findDealForContact(existing.id);
-          if (deal?.id) {
-            const c = classifications[0];
-            await updateDealCustomFields(deal.id, buildValues(c.mapped, c.row, c.classification));
-          }
+          await warmExistingContactCache(existing);
+          warmedCache += 1;
         } catch (err) {
-          noteError({ cpf, error: `fill_existing: ${err?.message || err}` });
+          warmCacheErrors += 1;
+        }
+        touchProvisionJob(jobId, {
+          processed: scanned,
+          status_message:
+            `Verificados ${scanned}/${personList.length} · ` +
+            `${updatedExisting} cobertos · ${provisionedPeople} a criar`,
+        });
+        return;
+      }
+
+      if (!claimSlot()) return;
+
+      const pushToCreate = (c, acao) => {
+        if (c.rgm) cacheSets.rgms.add(c.rgm);
+        toCreate.push({
+          nome,
+          cpf,
+          rgm: c.rgm || '',
+          tipo: tipoMatriculaFromRow(c.row) || '',
+          curso: c.mapped.curso || '',
+          polo: c.mapped.polo || '',
+          ciclo: c.mapped.ciclo || '',
+          situacao: c.mapped.situacao || '',
+          etapa: c.classification.stageName || '',
+          email: c.mapped._email || '',
+          telefone: c.mapped._phone || c.mapped.telefone_comercial || '',
+          existing_contact: true,
+          acao,
+        });
+      };
+
+      if (dryRun) {
+        filledExistingDeals += fills.length;
+        createdDeals += extras.length;
+        createdExtraDeals += extras.length;
+        for (const f of fills) pushToCreate(f.item, 'preencher');
+        for (const c of extras) pushToCreate(c, 'criar');
+        if (createdSamples.length < 15) {
+          createdSamples.push({
+            dry_run: true,
+            cpf,
+            nome,
+            existing_contact_id: existing.id,
+            action: fills.length && !extras.length ? 'would_fill' : 'would_create_extra_deal',
+            fills: fills.map((f) => ({ dealId: f.deal.id, rgm: f.item.rgm })),
+            deals: extras.map((c) => ({ rgm: c.rgm, stage: c.classification.stageName })),
+          });
+        }
+        touchProvisionJob(jobId, {
+          processed: scanned,
+          sent: createdDeals,
+          status_message:
+            `Verificados ${scanned}/${personList.length} · ` +
+            `${provisionedPeople} a criar · ${filledExistingDeals} preencher · ${createdExtraDeals} extra`,
+        });
+        return;
+      }
+
+      const dealSummaries = [];
+      for (const f of fills) {
+        if (aborted) break;
+        try {
+          await updateDealCustomFields(
+            f.deal.id,
+            buildValues(f.item.mapped, f.item.row, f.item.classification)
+          );
+          const nextStage = f.item.classification.stageId;
+          if (
+            nextStage &&
+            f.deal.stageId &&
+            nextStage !== f.deal.stageId &&
+            !isUntouchableStageId(f.deal.stageId)
+          ) {
+            await updateDeal(f.deal.id, { stageId: nextStage });
+          }
+          filledExistingDeals += 1;
+          if (f.item.rgm) cacheSets.rgms.add(f.item.rgm);
+          dealSummaries.push({
+            dealId: f.deal.id,
+            rgm: f.item.rgm,
+            stage: f.item.classification.stageName,
+            filled: true,
+          });
+        } catch (err) {
+          noteError({ cpf, rgm: f.item.rgm, error: `fill_existing: ${err?.message || err}` });
           console.warn(
-            `[novo-crm-provision] FAIL fill contact=${existing.id} cpf=${cpf}:`,
+            `[novo-crm-provision] FAIL fill deal=${f.deal.id} cpf=${cpf} rgm=${f.item.rgm}:`,
+            err?.message || err
+          );
+        }
+      }
+      for (const c of extras) {
+        if (aborted) break;
+        try {
+          const deal = await createDeal({
+            title: nome,
+            contactId: existing.id,
+            stageId: c.classification.stageId,
+          });
+          createdDeals += 1;
+          createdExtraDeals += 1;
+          if (c.rgm) cacheSets.rgms.add(c.rgm);
+          await updateDealCustomFields(deal.id, buildValues(c.mapped, c.row, c.classification));
+          dealSummaries.push({
+            dealId: deal.id,
+            number: deal.number,
+            rgm: c.rgm,
+            stage: c.classification.stageName,
+            extra: true,
+          });
+        } catch (err) {
+          noteError({ cpf, rgm: c.rgm, error: `extra_deal: ${err?.message || err}` });
+          console.warn(
+            `[novo-crm-provision] FAIL extra deal contact=${existing.id} cpf=${cpf} rgm=${c.rgm}:`,
             err?.message || err
           );
         }
@@ -658,31 +934,29 @@ export async function runMatriculadosProvision(opts = {}) {
         warmedCache += 1;
       } catch (err) {
         warmCacheErrors += 1;
-        console.warn(
-          `[novo-crm-provision] warm cache contact=${existing.id} cpf=${cpf}:`,
-          err?.message || err
-        );
       }
       if (createdSamples.length < 15) {
         createdSamples.push({
-          dry_run: dryRun,
+          contactId: existing.id,
           cpf,
           nome,
-          existing_contact_id: existing.id,
-          action: 'sync_only',
+          reused_contact: true,
+          action: fills.length && !extras.length ? 'fill_existing' : 'extra_deal',
+          deals: dealSummaries,
         });
       }
       touchProvisionJob(jobId, {
-        processed: scanned,
-        status_message:
-          `Verificados ${scanned}/${personList.length} · ` +
-          `${updatedExisting} já existem · ${createdContacts} a criar`,
+        processed: provisionedPeople,
+        sent: createdDeals,
+        failed: errors,
+        status_message: `Processados ${provisionedPeople}/${maxCreates} · deals ${createdDeals} · preencher ${filledExistingDeals} · extra ${createdExtraDeals}`,
       });
       return;
     }
 
     if (dryRun) {
       if (!claimSlot()) return;
+      createdContacts += 1;
       createdDeals += classifications.length;
       for (const c of classifications) {
         toCreate.push({
@@ -697,6 +971,7 @@ export async function runMatriculadosProvision(opts = {}) {
           etapa: c.classification.stageName || '',
           email: c.mapped._email || '',
           telefone: c.mapped._phone || c.mapped.telefone_comercial || '',
+          acao: 'criar',
         });
       }
       if (createdSamples.length < 15) {
@@ -733,9 +1008,10 @@ export async function runMatriculadosProvision(opts = {}) {
         phone: phoneE164Br(firstMapped._phone || firstMapped.telefone_comercial),
         source: 'SIAA',
       });
+      createdContacts += 1;
     } catch (err) {
       // Desfaz reserva do slot — create falhou.
-      if (reservedSlot.claimed) createdContacts = Math.max(0, createdContacts - 1);
+      if (reservedSlot.claimed) provisionedPeople = Math.max(0, provisionedPeople - 1);
       noteError({ cpf, error: `contact: ${err?.message || err}` });
       console.warn(`[novo-crm-provision] FAIL contato cpf=${cpf}:`, err?.message || err);
       return;
@@ -751,6 +1027,7 @@ export async function runMatriculadosProvision(opts = {}) {
           stageId: c.classification.stageId,
         });
         createdDeals += 1;
+        if (c.rgm) cacheSets.rgms.add(c.rgm);
         await updateDealCustomFields(deal.id, buildValues(c.mapped, c.row, c.classification));
         dealSummaries.push({
           dealId: deal.id,
@@ -780,10 +1057,10 @@ export async function runMatriculadosProvision(opts = {}) {
       );
     }
     touchProvisionJob(jobId, {
-      processed: createdContacts,
+      processed: provisionedPeople,
       sent: createdDeals,
       failed: errors,
-      status_message: `Processados ${createdContacts}/${maxCreates} · deals ${createdDeals}`,
+      status_message: `Processados ${provisionedPeople}/${maxCreates} · deals ${createdDeals} · extra ${createdExtraDeals}`,
     });
   };
 
@@ -793,7 +1070,7 @@ export async function runMatriculadosProvision(opts = {}) {
   const worker = async () => {
     while (true) {
       markCancelledByOperator();
-      if (aborted || createdContacts >= maxCreates) return;
+      if (aborted || provisionedPeople >= maxCreates) return;
       const idx = nextIndex++;
       if (idx >= personList.length) return;
       await processPerson(personList[idx]);
@@ -806,11 +1083,16 @@ export async function runMatriculadosProvision(opts = {}) {
     dry_run: dryRun,
     mode,
     scanned,
-    processed_people: createdContacts,
+    processed_people: provisionedPeople,
     created_contacts: createdContacts,
     created_deals: createdDeals,
+    created_extra_deals: createdExtraDeals,
+    filled_existing_deals: filledExistingDeals,
     updated_existing: updatedExisting,
     skipped_existing: skippedExisting,
+    skipped_live_rgm_covered: skippedLiveRgmCovered,
+    skipped_cpf_capacity: skippedCpfCapacity,
+    skipped_name_mismatch: skippedNameMismatch,
     skipped_cache: skippedCache,
     skipped_cache_rgm: skippedCacheRgm,
     skipped_cache_email: skippedCacheEmail,
@@ -848,7 +1130,7 @@ export async function runMatriculadosProvision(opts = {}) {
     phase: 'done',
     status_message: aborted
       ? abortReason
-      : `Concluído: ${result.created_contacts} novos · ${updatedExisting} já existiam · ${createdDeals} deals`,
+      : `Concluído: ${result.created_contacts} novos · ${filledExistingDeals} preencher · ${createdExtraDeals} extra · ${updatedExisting} cobertos · ${createdDeals} deals`,
     processed: scanned,
     sent: createdDeals,
     failed: errors,

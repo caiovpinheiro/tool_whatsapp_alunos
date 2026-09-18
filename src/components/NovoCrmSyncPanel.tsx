@@ -1276,8 +1276,9 @@ export function NovoCrmSyncPanel() {
           <div className="rounded-xl border border-gray-200 bg-white p-4 flex flex-col gap-2 h-full">
             <p className="text-xs font-semibold text-gray-900">3. Criação de leads novos</p>
             <p className="text-[11px] text-gray-500 flex-1">
-              Quem está na Relação de matriculados e ainda não tem negócio. A prévia filtra o
-              espelho (CPF, RGM, e-mail, telefone) e só consulta o CRM no que falta. Até{' '}
+              Quem está na Relação e ainda não tem negócio daquele RGM — pessoa nova ou 2ª
+              matrícula de quem já está no CRM (o deal nasce no contato existente). A prévia
+              filtra o espelho e só consulta o CRM no que falta. Até{' '}
               {PROVISION_NEW_MAX.toLocaleString('pt-BR')} por vez.
             </p>
             <div className="flex flex-wrap gap-2 mt-auto">
@@ -1333,8 +1334,14 @@ export function NovoCrmSyncPanel() {
                     {Number(provisionPreview.created_deals || 0).toLocaleString('pt-BR')}
                   </strong>{' '}
                   negócios
+                  {provisionPreview.filled_existing_deals
+                    ? ` · ${Number(provisionPreview.filled_existing_deals).toLocaleString('pt-BR')} preencher deal vazio`
+                    : ''}
+                  {provisionPreview.created_extra_deals
+                    ? ` · ${Number(provisionPreview.created_extra_deals).toLocaleString('pt-BR')} 2º RGM`
+                    : ''}
                   {provisionPreview.updated_existing
-                    ? ` · ${Number(provisionPreview.updated_existing).toLocaleString('pt-BR')} já existiam (só sync)`
+                    ? ` · ${Number(provisionPreview.updated_existing).toLocaleString('pt-BR')} já cobertos`
                     : ''}
                 </p>
                 <p>
@@ -1381,7 +1388,14 @@ export function NovoCrmSyncPanel() {
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-sky-700 hover:bg-sky-800 rounded-lg"
                     >
                       <UserPlus className="w-3.5 h-3.5" />
-                      Criar {Number(provisionPreview.created_contacts || 0).toLocaleString('pt-BR')} leads
+                      Aplicar{' '}
+                      {Number(
+                        (provisionPreview.created_deals || 0) +
+                          (provisionPreview.filled_existing_deals || 0) ||
+                          provisionPreview.created_contacts ||
+                          0
+                      ).toLocaleString('pt-BR')}{' '}
+                      ações
                     </button>
                     <button
                       type="button"
