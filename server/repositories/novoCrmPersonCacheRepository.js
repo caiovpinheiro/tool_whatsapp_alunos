@@ -629,6 +629,28 @@ export async function loadExistingCpfRgmSets() {
     if (e.includes('@')) emails.add(e);
     if (p.length >= 10) phones.add(p);
   }
+  // rgm_norm é um RGM por contact (o primário). O 2º curso mora em
+  // raw_data.dealsById. Sem isso a criação trata RGM que já está no card
+  // como ausente e entra na prévia (13/10: 258 pessoas).
+  const { rows: dealRgmRows } = await query(
+    `select distinct regexp_replace(coalesce(f->>'value', ''), '\\D', '', 'g') as rgm
+       from novo_crm_person_cache c
+       cross join lateral jsonb_each(coalesce(c.raw_data->'dealsById', '{}'::jsonb)) d
+       cross join lateral jsonb_array_elements(
+         case when jsonb_typeof(d.value->'customFields') = 'array'
+              then d.value->'customFields'
+              else '[]'::jsonb end
+       ) f
+      where c.is_deleted = false
+        and (
+          lower(coalesce(f->>'name', '')) = 'rgm'
+          or coalesce(f->>'id', f->>'customFieldId', '') = 'cmrmexurt18tfnm01e6krzug6'
+        )`
+  );
+  for (const r of dealRgmRows) {
+    const g = String(r.rgm || '');
+    if (g.length >= 5) rgms.add(g);
+  }
   return { cpfs, rgms, emails, phones, cpfToContactId };
 }
 
