@@ -81,6 +81,8 @@ import {
   getNovoCrmStageIds,
   isCaaWithinRetencaoWindow,
   isUntouchableStageId,
+  lostReasonForPerdido,
+  motivoPerdaSelectValue,
   stageNameFromId,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
@@ -1769,7 +1771,24 @@ export async function runFlagsStageSync(opts = {}) {
               cleanupProtected
             );
             if (d.move) {
-              await updateDeal(item.dealId, { stageId: item.classification.stageId });
+              const stagePatch = { stageId: item.classification.stageId };
+              if (perdidoStageId && stagePatch.stageId === perdidoStageId) {
+                stagePatch.lostReason = lostReasonForPerdido(item.classification);
+              }
+              await updateDeal(item.dealId, stagePatch);
+              const motivoPerda = motivoPerdaSelectValue(stagePatch.lostReason);
+              if (motivoPerda && fieldIds.motivo_perda) {
+                try {
+                  await updateDealCustomFields(item.dealId, [
+                    { fieldId: fieldIds.motivo_perda, value: motivoPerda },
+                  ]);
+                } catch (motivoErr) {
+                  console.warn(
+                    `[novo-crm-flags-sync] motivo perda fail deal=${item.dealId}:`,
+                    motivoErr?.message || motivoErr
+                  );
+                }
+              }
               stagesMoved += 1;
               if (item.isExitRematOrphan) stagesExitRematOrphan += 1;
               else if (item.isExitRemat) stagesExitRemat += 1;

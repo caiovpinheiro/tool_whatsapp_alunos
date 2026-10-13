@@ -41,6 +41,8 @@ import {
   getNovoCrmDealFieldIds,
   getNovoCrmStageIds,
   isUntouchableStageId,
+  LOST_REASON_SEM_RESPOSTA,
+  lostReasonForPerdido,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
 import { displayRgmFromMatriculadosRow } from '../utils/rgmDisplay.js';
@@ -1154,7 +1156,10 @@ export async function runOrphanAlunoProvision(opts = {}) {
         ) {
           skipped += 1;
         } else {
-          await updateDeal(action.target_deal_id, { stageId: perdidoStageId });
+          await updateDeal(action.target_deal_id, {
+            stageId: perdidoStageId,
+            lostReason: LOST_REASON_SEM_RESPOSTA,
+          });
           movesApplied += 1;
           if (action.reason === 'duplicate') duplicateMovesApplied += 1;
           else incompleteMovesApplied += 1;
@@ -1663,7 +1668,14 @@ export async function runOrphanAlunoProvision(opts = {}) {
       skippedDuplicateRgm += 1;
       return null;
     }
-    const deal = await createDeal({ title: nome, contactId, stageId: classification.stageId });
+    const deal = await createDeal({
+      title: nome,
+      contactId,
+      stageId: classification.stageId,
+      ...(classification?.stageName === 'Perdido'
+        ? { lostReason: lostReasonForPerdido(classification) }
+        : {}),
+    });
     createdDeals += 1;
     // Mesmo com SKIP_FIELDS=1, grava CPF+RGM — sem isso o dedupe sibling
     // não vê o RGM e recria o mesmo deal em runs seguintes (incidente 28/07).
@@ -1688,7 +1700,10 @@ export async function runOrphanAlunoProvision(opts = {}) {
         // Não deixa clone vazio vivo: se o write-back de CPF/RGM falhar,
         // quarentena o card recém-criado e permite uma futura run tentar de novo.
         try {
-          await updateDeal(deal.id, { stageId: perdidoStageId });
+          await updateDeal(deal.id, {
+            stageId: perdidoStageId,
+            lostReason: LOST_REASON_SEM_RESPOSTA,
+          });
           await tagLimpezaDuplicataBestEffort(deal.id);
         } catch (cleanupErr) {
           throw new Error(
@@ -2249,7 +2264,10 @@ export async function runOrphanAlunoProvision(opts = {}) {
           }
           if (!dryRun) {
             try {
-              await updateDeal(deal.id, { stageId: perdidoStageId });
+              await updateDeal(deal.id, {
+                stageId: perdidoStageId,
+                lostReason: LOST_REASON_SEM_RESPOSTA,
+              });
               await alignSitAfterPerdidoMove(deal.id, {
                 rgm: normalizeRgm(dealCustomValue(deal, ['rgm'])),
                 cpf:
@@ -2608,7 +2626,10 @@ export async function runOrphanAlunoProvision(opts = {}) {
       } else {
         for (const l of losers) {
           try {
-            await updateDeal(l.dealId, { stageId: perdidoStageId });
+            await updateDeal(l.dealId, {
+              stageId: perdidoStageId,
+              lostReason: LOST_REASON_SEM_RESPOSTA,
+            });
             await alignSitAfterPerdidoMove(l.dealId, {
               rgm: normalizeRgm(l.rgm) || groupRgm,
               cpf: normalizeCpf(l.cpf),

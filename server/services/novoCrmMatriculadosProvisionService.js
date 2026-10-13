@@ -34,6 +34,7 @@ import {
   getNovoCrmDealFieldIds,
   isProdCrmHost,
   isUntouchableStageId,
+  lostReasonForPerdido,
   phoneE164Br,
   titleCasePolo,
 } from '../utils/novoCrmStageRules.js';
@@ -937,7 +938,12 @@ export async function runMatriculadosProvision(opts = {}) {
             nextStage !== f.deal.stageId &&
             !isUntouchableStageId(f.deal.stageId)
           ) {
-            await updateDeal(f.deal.id, { stageId: nextStage });
+            await updateDeal(f.deal.id, {
+              stageId: nextStage,
+              ...(f.item.classification?.stageName === 'Perdido'
+                ? { lostReason: lostReasonForPerdido(f.item.classification) }
+                : {}),
+            });
           }
           filledExistingDeals += 1;
           if (f.item.rgm) cacheSets.rgms.add(f.item.rgm);
@@ -962,6 +968,9 @@ export async function runMatriculadosProvision(opts = {}) {
             title: nome,
             contactId: existing.id,
             stageId: c.classification.stageId,
+            ...(c.classification?.stageName === 'Perdido'
+              ? { lostReason: lostReasonForPerdido(c.classification) }
+              : {}),
           });
           createdDeals += 1;
           createdExtraDeals += 1;
@@ -1078,6 +1087,9 @@ export async function runMatriculadosProvision(opts = {}) {
           title: nome,
           contactId: contact.id,
           stageId: c.classification.stageId,
+          ...(c.classification?.stageName === 'Perdido'
+            ? { lostReason: lostReasonForPerdido(c.classification) }
+            : {}),
         });
         createdDeals += 1;
         if (c.rgm) cacheSets.rgms.add(c.rgm);

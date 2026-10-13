@@ -139,6 +139,44 @@ export function isUntouchableStageId(stageId) {
   return getUntouchableStageIds().has(id);
 }
 
+/** Campo nativo `deals.lostReason`. O funil recusa Perdido sem esse texto. */
+export const LOST_REASON_CANCELADO = 'Cancelado';
+export const LOST_REASON_TRANCADO = 'Trancado';
+export const LOST_REASON_SEM_RESPOSTA = 'Sem resposta';
+
+const MOTIVO_PERDA_SELECT = new Set([
+  'Sem resposta',
+  'Financeiro',
+  'Outro Polo',
+  'Tempo',
+  'Desemprego',
+]);
+
+/**
+ * Motivo ao entrar em Perdido.
+ * SIAA Cancelado → Cancelado. SIAA Trancado → Trancado (não é cancelamento;
+ * nenhuma opção do SELECT Motivo Perda descreve trancamento).
+ * Fora da Relação, sem identidade, órfão de rematrícula e duplicata → Sem resposta:
+ * não há status acadêmico que prove cancelamento.
+ * @param {{ meta?: { isCancelado?: boolean, isTrancado?: boolean, situacao?: string } } | null | undefined} classification
+ */
+export function lostReasonForPerdido(classification) {
+  const meta = classification?.meta || {};
+  const situacao = String(meta.situacao || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+  if (meta.isCancelado || situacao.includes('CANCEL')) return LOST_REASON_CANCELADO;
+  if (meta.isTrancado || situacao.includes('TRANC')) return LOST_REASON_TRANCADO;
+  return LOST_REASON_SEM_RESPOSTA;
+}
+
+/** Valor do SELECT Motivo Perda, ou '' quando o rótulo nativo não está nas opções. */
+export function motivoPerdaSelectValue(lostReason) {
+  const value = String(lostReason || '').trim();
+  return MOTIVO_PERDA_SELECT.has(value) ? value : '';
+}
+
 export function stageNameFromId(stageId) {
   const id = String(stageId || '').trim();
   if (!id) return null;
@@ -182,6 +220,8 @@ export function getNovoCrmDealFieldIds() {
     evasao: envId('NOVO_CRM_FIELD_EVASAO', 'cmrtk0ob6008nua48ceomws81'),
     // PROD: "Atualizado?" — Sim só com escrita de campos SIAA (não stage/flags-only).
     atualizado: envId('NOVO_CRM_FIELD_ATUALIZADO', ''),
+    // PROD: SELECT `motivoperda` label "Motivo Perda". Não é o lostReason nativo.
+    motivo_perda: envId('NOVO_CRM_FIELD_MOTIVO_PERDA', ''),
   };
 }
 

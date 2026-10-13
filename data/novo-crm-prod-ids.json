@@ -33,7 +33,8 @@
     "NOVO_CRM_FIELD_SITUACAO": "cmrmexuw818tjnm01igvkevn1",
     "NOVO_CRM_FIELD_MARCO": "cmst97c9q01a7mp019n6671ji",
     "NOVO_CRM_FIELD_CAA": "cmtdlx1kr0phlmp01equyxx8s",
-    "NOVO_CRM_FIELD_DATA_REMATRICULA": "cmtdlxb4z0phvmp01u7o3oji1"
+    "NOVO_CRM_FIELD_DATA_REMATRICULA": "cmtdlxb4z0phvmp01u7o3oji1",
+    "NOVO_CRM_FIELD_MOTIVO_PERDA": "cmsdgzeip02ztmy01rhle73b0"
   },
   "stagesByName": {
     "Lead de Entrada": "cmrwd95sx01mfpd01axkzjhm8",

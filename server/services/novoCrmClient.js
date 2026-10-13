@@ -664,7 +664,7 @@ export async function createContact(payload) {
 /**
  * Atualiza deal (ex.: mover de etapa).
  * @param {string} dealId
- * @param {{ stageId?: string, title?: string, status?: string }} patch
+ * @param {{ stageId?: string, title?: string, status?: string, lostReason?: string }} patch
  */
 export async function updateDeal(dealId, patch) {
   const id = String(dealId || '').trim();
@@ -683,6 +683,9 @@ export async function updateDeal(dealId, patch) {
   if (patch?.status != null && String(patch.status).trim()) {
     body.status = String(patch.status).trim();
   }
+  if (patch?.lostReason != null && String(patch.lostReason).trim()) {
+    body.lostReason = String(patch.lostReason).trim();
+  }
   if (!Object.keys(body).length) {
     const err = new Error('Nenhum campo de deal para atualizar');
     err.status = 400;
@@ -695,7 +698,7 @@ export async function updateDeal(dealId, patch) {
 }
 
 /**
- * @param {{ title: string, contactId: string, stageId: string, value?: number }} payload
+ * @param {{ title: string, contactId: string, stageId: string, value?: number, lostReason?: string }} payload
  */
 export async function createDeal(payload) {
   const title = String(payload?.title || '').trim();
@@ -708,6 +711,9 @@ export async function createDeal(payload) {
   }
   const body = { title, contactId, stageId };
   if (payload.value != null) body.value = payload.value;
+  if (payload.lostReason != null && String(payload.lostReason).trim()) {
+    body.lostReason = String(payload.lostReason).trim();
+  }
   return request('/api/deals', { method: 'POST', body });
 }
 
