@@ -19,15 +19,27 @@ export function createRateLimiter(maxPerWindow, windowMs = 1000) {
   const cap = Math.max(1, Math.floor(maxPerWindow));
   /** @type {number[]} timestamps (ms) das últimas operações */
   const recent = [];
+  /** Pausa global (429 Retry-After). Não empilha: várias respostas estendem até o maior prazo. */
+  let blockedUntil = 0;
+
+  function pause(ms) {
+    const wait = Math.max(0, Number(ms) || 0);
+    const until = Date.now() + wait;
+    if (until > blockedUntil) blockedUntil = until;
+  }
 
   async function acquire() {
     while (true) {
       const now = Date.now();
+      if (now < blockedUntil) {
+        await new Promise((r) => setTimeout(r, blockedUntil - now));
+        continue;
+      }
       while (recent.length > 0 && now - recent[0] >= windowMs) {
         recent.shift();
       }
       if (recent.length < cap) {
-        recent.push(now);
+        recent.push(Date.now());
         return;
       }
       const waitMs = windowMs - (now - recent[0]) + 1;
@@ -37,6 +49,7 @@ export function createRateLimiter(maxPerWindow, windowMs = 1000) {
 
   return {
     acquire,
+    pause,
     /** @returns {{ in_window: number, cap: number, window_ms: number }} */
     stats() {
       const now = Date.now();

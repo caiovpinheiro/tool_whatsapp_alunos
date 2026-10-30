@@ -92,7 +92,8 @@ async function request(path, opts = {}) {
     throw err;
   }
   const method = String(opts.method || 'GET').toUpperCase();
-  // POST (create) não é idempotente → sem retry por default.
+  // POST (create) não é idempotente → sem retry em 5xx (o card pode ter nascido).
+  // 429 rejeita antes de gravar, então o POST tenta de novo. A pausa é do cliente inteiro.
   // PUT/PATCH/DELETE: poucos retries (429/5xx). GET: retries generosos.
   let defaultRetries = 4;
   if (method === 'POST') defaultRetries = 0;
@@ -101,6 +102,7 @@ async function request(path, opts = {}) {
     0,
     opts.maxRetries != null ? Number(opts.maxRetries) : defaultRetries
   );
+  const post429Retries = 3;
   // Status transitórios do CRM (instância DEV costuma dar 502 sob carga).
   const RETRIABLE_STATUS = new Set([429, 500, 502, 503, 504]);
   let attempt = 0;
@@ -147,12 +149,30 @@ async function request(path, opts = {}) {
       json = { raw: text };
     }
 
-    if (RETRIABLE_STATUS.has(res.status) && attempt < maxRetries) {
+    if (res.status === 429) {
+      // 429 com id: o CRM gravou e o limite estourou na resposta. Não posta de novo.
+      if (method === 'POST' && json && (json.id || json.data?.id)) {
+        return json;
+      }
       const retryAfter = Number(res.headers.get('retry-after'));
-      const backoffMs =
+      const backoffMs = Math.min(
+        120_000,
         Number.isFinite(retryAfter) && retryAfter > 0
           ? retryAfter * 1000
-          : Math.min(30_000, 1500 * 2 ** attempt);
+          : Math.min(30_000, 1500 * 2 ** attempt)
+      );
+      apiLimiter.pause(backoffMs);
+      const retryCap = method === 'POST' ? post429Retries : maxRetries;
+      if (attempt < retryCap) {
+        attempt += 1;
+        console.warn(
+          `[novo-crm-api] 429 em ${path} — pausa global ${backoffMs}ms, retry ${attempt}/${retryCap}`
+        );
+        await sleep(backoffMs);
+        continue;
+      }
+    } else if (RETRIABLE_STATUS.has(res.status) && attempt < maxRetries) {
+      const backoffMs = Math.min(30_000, 1500 * 2 ** attempt);
       attempt += 1;
       console.warn(
         `[novo-crm-api] ${res.status} em ${path} — retry ${attempt}/${maxRetries} em ${backoffMs}ms`

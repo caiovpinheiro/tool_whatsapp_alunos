@@ -860,12 +860,9 @@ export async function runMatriculadosProvision(opts = {}) {
         updatedExisting += 1;
         skippedExisting += 1;
         skippedLiveRgmCovered += 1;
-        try {
-          await warmExistingContactCache(existing);
-          warmedCache += 1;
-        } catch (err) {
-          warmCacheErrors += 1;
-        }
+        // Quem já está coberto não regrava o espelho nesta run (prévia nem apply).
+        // São centenas de GET no meio da criação e estouram o 429. O contact em
+        // que esta run escreveu continua sendo aquecido depois do POST.
         touchProvisionJob(jobId, {
           processed: scanned,
           status_message:
