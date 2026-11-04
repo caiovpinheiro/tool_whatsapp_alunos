@@ -318,9 +318,17 @@ function identityIndexFromCaaIdSet(idSet) {
   return index;
 }
 
-/** Ratio mínimo nRows/simCount pra permitir saída (Sim→Não / sair de Sem Rematricula). */
-function flagsExitSanityRatio() {
-  const v = Number(process.env.NOVO_CRM_FLAGS_EXIT_SANITY_RATIO);
+/**
+ * Ratio mínimo nRows/simCount pra permitir saída (Sim→Não / sair de Sem Rematricula).
+ * `NOVO_CRM_FLAGS_EXIT_SANITY_RATIO_<KEY>` (ex. `_INADIMPLENTE`) vence a global só
+ * para aquela flag: destrava a limpeza de uma flag inflada sem baixar a guarda das outras.
+ * @param {string} [key] — `def.key` da fila de saída
+ */
+function flagsExitSanityRatio(key = '') {
+  const perFlag = key
+    ? String(process.env[`NOVO_CRM_FLAGS_EXIT_SANITY_RATIO_${key.toUpperCase()}`] ?? '').trim()
+    : '';
+  const v = Number(perFlag || process.env.NOVO_CRM_FLAGS_EXIT_SANITY_RATIO);
   if (!Number.isFinite(v)) return 0.7;
   return Math.min(Math.max(v, 0), 1);
 }
@@ -1434,7 +1442,7 @@ export async function runFlagsStageSync(opts = {}) {
     for (const def of exitFlagDefs) {
       const base = def.index;
       const simCount = flagSimCount[def.key];
-      const allowed = base.nRows > 0 && base.nRows >= sanityRatio * simCount;
+      const allowed = base.nRows > 0 && base.nRows >= flagsExitSanityRatio(def.key) * simCount;
       flagsExitAllowed[def.key] = allowed;
       if (!allowed) {
         exitSkippedSanity[def.key] = flagExitCandidates.filter((c) => c.key === def.key).length;

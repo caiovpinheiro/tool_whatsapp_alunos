@@ -5,6 +5,14 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-11-04 — Financeira inflada por upload errado na base da Pós + trava de saída por flag
+- **Modelo usado:** Opus.
+- **Incidente:** em 03/11 subiram `Alunos com mensalidade em aberto (3).xlsx` (21.272 linhas, layout da **Graduação**: CPF/RGM/Tipo Título) na base **Inadimplente Pós SIAA**. Sem colunas `DESCRICA*`, o filtro fail-open de MENSALIDADE deixou tudo passar → Att marcou Financeira=Sim em ~21,2k deals (filtro Kanban Financeira=Sim ≈ Dia 10).
+- **Limpeza:** snapshot `3daf0a4e-…` apagado (backup local em `data/_backup-inad-pos-siaa-snapshot-3daf0a4e-20261104.json`, não versionado). Base Pós ativa voltou a ser `pós_2809.xlsx`.
+- **Por que a Att sozinha não limpava:** nRows (4.429 Grad + 3.226 Pós = 7.655) < 0,7 × 21.227 Sim → `exit_skipped_sanity.inadimplente`. A guarda de 70% protege contra base **encolhida**; aqui o erro foi base **inflada**.
+- **Decisão:** `NOVO_CRM_FLAGS_EXIT_SANITY_RATIO_<KEY>` (ex. `_INADIMPLENTE=0.3`) vence a global **só para aquela flag** de saída. Sem Rematrícula e as outras flags seguem com a global. Setar para uma run, conferir `exit_skipped_sanity`, **remover** a variável.
+- **Rejeitado:** baixar `NOVO_CRM_FLAGS_EXIT_SANITY_RATIO` global — tira a proteção de Doc/Dia 10/Blackboard/Sem Remat na mesma run.
+
 ### 2026-09-18 — Criação diária também cobre 2º RGM (buraco do Gustavo)
 - **Modelo usado:** Grok.
 - **Caso:** RGM `49825089` Gustavo Nascimento Barbosa — EM CURSO Ciência de Dados, Relação do dia. Já tinha deal do RGM antigo `48317667` (Contábeis CANCELADO). `mode=new` agrupava por CPF e `cacheCoverageKind` pulava a pessoa inteira se o CPF já estava no espelho. Dedupe de órfãos também não pega (órfão = contact sem deal).
@@ -405,7 +413,7 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
   2. **Passo inverso** roda depois do loop principal, sobre **todos** os deals do cache com flag=Sim / etapa Sem Rematricula (merge por `dealId` com a fila do loop principal — idempotente):
      - **Flags** (doc/inad/bb/evasão): deal com flag=Sim e identidade **fora** do índice da base → enqueue Não.
      - **Sem Rematricula**: deal na etapa e identidade fora do índice de rematrícula **e com matRow** no relatório de matriculados (sem matRow não reclassifica — sem dado pra saber o destino) → `classifyMatriculado(inRematricula:false, …)` decide a nova etapa (respeita intocáveis via o mesmo `decideMoveWork`) e atualiza o carousel Situação se mudou.
-  3. **Sanity por fila:** se `nRows === 0` ou `nRows < NOVO_CRM_FLAGS_EXIT_SANITY_RATIO (default 0.7) × simCount` (simCount = **todos** os deals com Sim/na etapa no cache), a saída **daquela fila inteira** é pulada — upload incompleto/corrompido não pode zerar a base inteira. Contado em `exit_skipped_sanity` (obj por fila). `nRows` é contado no `forEach` do snapshot (não confia só em `row_count` metadata).
+  3. **Sanity por fila:** se `nRows === 0` ou `nRows < NOVO_CRM_FLAGS_EXIT_SANITY_RATIO (default 0.7) × simCount` (simCount = **todos** os deals com Sim/na etapa no cache), a saída **daquela fila inteira** é pulada — upload incompleto/corrompido não pode zerar a base inteira. Override por flag: `NOVO_CRM_FLAGS_EXIT_SANITY_RATIO_<KEY>` (ver 2026-11-04). Contado em `exit_skipped_sanity` (obj por fila). `nRows` é contado no `forEach` do snapshot (não confia só em `row_count` metadata).
   4. **Merge por dealId** antes de escrever — mesmo deal pode acumular flags de saída + reclassificação de etapa num único PUT.
 - **Matriculados (match, sem trocar a política existente):** além de `byCpf`/`byRgm`, indexa `byEmail`/`byPhone` do relatório (`_email`, `e_mail_ad`, `_phone`), também só se únicos. No loop principal, se cpf/rgm do deal não baterem, tenta `email_norm`/`phone_norm` do cache antes de desistir (`skipped_no_match`). Política de escrita do loop principal **não muda**: vazio→Sim preenche, diverge corrige, vazio→Não não grava em massa.
 - **CAA:** fila local (`caaProtocolsRepository`) não mudou — Retenção continua vencendo por CAA open ≤72h independente do passo inverso.
