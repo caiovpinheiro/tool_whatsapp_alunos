@@ -220,6 +220,8 @@ export function getNovoCrmDealFieldIds() {
     evasao: envId('NOVO_CRM_FIELD_EVASAO', 'cmrtk0ob6008nua48ceomws81'),
     // PROD: "Atualizado?" — Sim só com escrita de campos SIAA (não stage/flags-only).
     atualizado: envId('NOVO_CRM_FIELD_ATUALIZADO', ''),
+    // PROD: SELECT "Calouro" (Sim/Não) — só Graduação, derivado da Data de Rematrícula (calouroRule).
+    calouro: envId('NOVO_CRM_FIELD_CALOURO', ''),
     // PROD: SELECT `motivoperda` label "Motivo Perda". Não é o lostReason nativo.
     motivo_perda: envId('NOVO_CRM_FIELD_MOTIVO_PERDA', ''),
   };

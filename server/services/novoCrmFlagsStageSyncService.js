@@ -97,6 +97,7 @@ import { isNovoCrmCacheSyncRunning } from './novoCrmPersonCacheSyncService.js';
 import { marcoFieldPair } from '../utils/marcoRegulatorio.js';
 import { fixaDateFieldPairs } from '../utils/fixaMatriculaDates.js';
 import { baseRowFilterForCategory } from '../utils/inadPosSiaaImport.js';
+import { resolveCalouro } from '../utils/calouroRule.js';
 
 function digits(v) {
   return String(v ?? '').replace(/\D/g, '');
@@ -1102,6 +1103,22 @@ export async function runFlagsStageSync(opts = {}) {
           'situacao'
         );
         pushChangedField(fieldValues, deal, fieldIds.nivel, mapped.nivel, ['nivel', 'nível'], 'nivel');
+        {
+          // Calouro (só Graduação): Data de Rematrícula que ficará no card → Não; vazia → Sim.
+          const rematId = String(fieldIds.data_rematricula || '').trim();
+          const pending = rematId ? fieldValues.find((fv) => fv.fieldId === rematId) : null;
+          const dataRematricula = pending
+            ? pending.value
+            : readDealField(deal, fieldIds.data_rematricula, [
+                'data_rematricula',
+                'data_de_rematricula',
+                'data rematricula',
+              ]);
+          const calouro = resolveCalouro({ nivel: mapped.nivel, dataRematricula });
+          if (calouro !== null) {
+            pushChangedField(fieldValues, deal, fieldIds.calouro, calouro, ['calouro'], 'text');
+          }
+        }
         pushChangedField(fieldValues, deal, fieldIds.email, mapped._email, ['email', 'e-mail'], 'email');
         pushChangedField(
           fieldValues,

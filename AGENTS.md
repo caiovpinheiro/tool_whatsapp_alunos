@@ -5,6 +5,13 @@ Subagentes devem consultar antes de questionar/refazer escolhas já avaliadas.
 
 ## Decisões técnicas
 
+### 2026-11-04 — Calouro derivado da Data de Rematrícula (só Graduação)
+- **Modelo usado:** Opus.
+- **Regra:** campo Bwipo `Calouro` (SELECT Sim/Não, `NOVO_CRM_FIELD_CALOURO` = `cmw9k81si04n3oc01j7vuhd6l`) é preenchido pela Att de campos (`doFields`) do Novo CRM. Só nível **Graduação** (mesmo `normalizeNivelCrm` da etapa Grad/Pós): Data de Rematrícula preenchida → `Não`; vazia → `Sim`.
+- **Fonte da data:** o valor que ficará no card — o de `data_rematricula` já enfileirado em `fieldValues` na mesma run, senão o do deal (`readDealField`).
+- **Pós-Graduação / nível não identificado:** não toca no campo (`resolveCalouro` → `null`). Lógica em `server/utils/calouroRule.js` (+ `calouroRule.test.mjs`).
+- **Não entra em `SIAA_ATUALIZADO_FIELD_KEYS`:** é campo derivado; sozinho não marca `Atualizado?`=Sim.
+
 ### 2026-11-04 — Financeira inflada por upload errado na base da Pós + trava de saída por flag
 - **Modelo usado:** Opus.
 - **Incidente:** em 03/11 subiram `Alunos com mensalidade em aberto (3).xlsx` (21.272 linhas, layout da **Graduação**: CPF/RGM/Tipo Título) na base **Inadimplente Pós SIAA**. Sem colunas `DESCRICA*`, o filtro fail-open de MENSALIDADE deixou tudo passar → Att marcou Financeira=Sim em ~21,2k deals (filtro Kanban Financeira=Sim ≈ Dia 10).
